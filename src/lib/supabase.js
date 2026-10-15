@@ -130,7 +130,7 @@ export const supabase = isSupabaseConfigured()
  * Upload helper to Supabase Storage with strict relative path validation
  * Default bucket: 'frames'
  */
-export async function uploadToStorage(bucketName = 'frames', filePath, fileOrBlob, contentType = 'image/png') {
+export async function uploadToStorage(bucketName = 'frames', filePath, fileOrBlob, contentType = 'image/png', upsert = true) {
   if (!isSupabaseConfigured()) {
     console.warn(`Supabase storage upload simulated (credentials not configured) for: ${bucketName}/${filePath}`);
     if (fileOrBlob instanceof Blob || fileOrBlob instanceof File) {
@@ -154,7 +154,7 @@ export async function uploadToStorage(bucketName = 'frames', filePath, fileOrBlo
 
   const { data, error } = await bucket.upload(cleanPath, fileOrBlob, {
     contentType: detectedType,
-    upsert: true,
+    upsert,
   });
 
   if (error) {

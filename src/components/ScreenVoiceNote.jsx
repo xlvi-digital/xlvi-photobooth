@@ -20,6 +20,7 @@ export default function ScreenVoiceNote({
   const [errorText, setErrorText] = useState('');
 
   const timerRef = useRef(null);
+  const elapsedSecondsRef = useRef(0);
   const playbackTimerRef = useRef(null);
   const mediaRecorderRef = useRef(null);
   const audioChunksRef = useRef([]);
@@ -90,10 +91,14 @@ export default function ScreenVoiceNote({
   const handleStartRecord = async () => {
     setErrorText('');
     setElapsedSeconds(0);
+    elapsedSecondsRef.current = 0;
     audioChunksRef.current = [];
 
     try {
-      if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+      if (window.isSecureContext === false) {
+        throw new Error('Perekaman suara memerlukan koneksi HTTPS yang aman.');
+      }
+      if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia || typeof MediaRecorder === 'undefined') {
         throw new Error('Perekam suara tidak didukung di browser ini.');
       }
 
@@ -112,11 +117,25 @@ export default function ScreenVoiceNote({
       };
 
       mediaRecorder.onstop = () => {
-        const finalType = mimeType || 'audio/webm';
+        const finalType = mediaRecorder.mimeType || audioChunksRef.current.find((chunk) => chunk.type)?.type || mimeType;
+        if (!finalType) {
+          setErrorText('Browser tidak menyediakan format audio yang dapat disimpan. Coba gunakan browser yang mendukung rekaman suara.');
+          setVoiceAudioBlob(null);
+          setRecordState('idle');
+          stopMicStream();
+          return;
+        }
         const audioBlob = new Blob(audioChunksRef.current, { type: finalType });
+        if (!audioBlob.size) {
+          setErrorText('Rekaman kosong atau gagal dibuat. Periksa mikrofon lalu rekam ulang.');
+          setVoiceAudioBlob(null);
+          setRecordState('idle');
+          stopMicStream();
+          return;
+        }
         setVoiceAudioBlob(audioBlob);
 
-        const currentSecs = elapsedSeconds > 0 ? elapsedSeconds : 1;
+        const currentSecs = elapsedSecondsRef.current > 0 ? elapsedSecondsRef.current : 1;
         setVoiceDuration(formatTime(currentSecs));
         setRecordState('recorded');
         stopMicStream();
@@ -141,33 +160,21 @@ export default function ScreenVoiceNote({
         setElapsedSeconds((prev) => {
           if (prev >= MAX_DURATION - 1) {
             handleStopRecord();
+            elapsedSecondsRef.current = MAX_DURATION;
             return MAX_DURATION;
           }
+          elapsedSecondsRef.current = prev + 1;
           return prev + 1;
         });
       }, 1000);
     } catch (err) {
-      console.warn('Microphone access denied, activating synthetic demo recording:', err);
-      simulateVoiceRecording();
+      console.warn('Microphone recording unavailable:', err);
+      stopMicStream();
+      setRecordState('idle');
+      setErrorText(err.name === 'NotAllowedError'
+        ? 'Izin mikrofon ditolak. Izinkan akses mikrofon di pengaturan situs browser, lalu coba lagi.'
+        : (err.message || 'Mikrofon tidak dapat digunakan. Periksa izin dan coba lagi.'));
     }
-  };
-
-  const simulateVoiceRecording = () => {
-    setRecordState('recording');
-    setElapsedSeconds(0);
-
-    timerRef.current = setInterval(() => {
-      setElapsedSeconds((prev) => {
-        if (prev >= 6) {
-          clearInterval(timerRef.current);
-          setRecordState('recorded');
-          setVoiceDuration('00:06');
-          setVoiceAudioBlob(new Blob(['mock-audio'], { type: 'audio/webm' }));
-          return 6;
-        }
-        return prev + 1;
-      });
-    }, 1000);
   };
 
   const handleStopRecord = () => {
@@ -192,6 +199,7 @@ export default function ScreenVoiceNote({
     setIsPlaying(false);
     setPlaybackSeconds(0);
     setElapsedSeconds(0);
+    elapsedSecondsRef.current = 0;
     setRecordState('idle');
     setVoiceAudioBlob(null);
   };

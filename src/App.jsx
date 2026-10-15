@@ -94,6 +94,8 @@ export default function App() {
 
   // Gallery state
   const [galleryItems, setGalleryItems] = useState(INITIAL_GALLERY);
+  const [galleryLoading, setGalleryLoading] = useState(false);
+  const [galleryError, setGalleryError] = useState('');
 
   // Submission & Prototype State Toggles
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -150,6 +152,7 @@ export default function App() {
     async function loadActiveEvent() {
       setEventLoading(true);
       setEventError(null);
+      setGalleryError('');
 
       try {
         let slugToQuery = currentSlug;
@@ -220,10 +223,20 @@ export default function App() {
             setSelectedFrame(FRAMES[0]);
           }
 
-          // 5. Load submissions strictly for this event
-          const subs = await fetchSubmissionsForEvent(event.id);
-          setGalleryItems(subs && subs.length > 0 ? subs : []);
-
+          // 5. Load submissions strictly for this event.
+          setGalleryLoading(true);
+          try {
+            const subs = await fetchSubmissionsForEvent(event.id);
+            if (!isCancelled) setGalleryItems(subs);
+          } catch (galleryLoadError) {
+            console.error('[GALLERY LOAD ERROR]', galleryLoadError);
+            if (!isCancelled) {
+              setGalleryItems([]);
+              setGalleryError('Galeri gagal dimuat dari server. Periksa koneksi atau izin Supabase, lalu coba lagi.');
+            }
+          } finally {
+            if (!isCancelled) setGalleryLoading(false);
+          }
           setEventLoading(false);
         }
       } catch (err) {
@@ -241,6 +254,22 @@ export default function App() {
       isCancelled = true;
     };
   }, [viewMode, currentSlug]);
+
+  const handleRefreshGallery = async () => {
+    if (!activeEvent?.id) return;
+    setGalleryLoading(true);
+    setGalleryError('');
+    try {
+      const submissions = await fetchSubmissionsForEvent(activeEvent.id);
+      setGalleryItems(submissions);
+    } catch (err) {
+      console.error('[GALLERY REFRESH ERROR]', err);
+      setGalleryItems([]);
+      setGalleryError('Galeri gagal dimuat dari server. Periksa koneksi atau izin Supabase, lalu coba lagi.');
+    } finally {
+      setGalleryLoading(false);
+    }
+  };
 
   // Lock body scroll when on Gallery screen for strict 100dvh compliance
   useEffect(() => {
@@ -320,9 +349,7 @@ export default function App() {
       const submittedItem = await createSubmission({
         eventId: activeEvent.id, // Strictly uses active event ID
         guestName: guestName.trim() || 'Tamu Istimewa',
-        guestMessage: isVoice
-          ? (guestMessage || 'Menyampaikan ucapan hangat melalui Voice Note 🎙️')
-          : guestMessage.trim(),
+        guestMessage: guestMessage.trim(),
         mediaType: finalMedia?.type || 'photo',
         frame: activeF,
         mediaBlobOrUrl: finalMedia?.mediaBlob || finalMedia?.mediaUrl,
@@ -627,6 +654,9 @@ export default function App() {
               {currentScreen === 'gallery' && (
                 <ScreenGallery
                   galleryItems={galleryItems}
+                  isLoading={galleryLoading}
+                  loadError={galleryError}
+                  onRetryLoad={handleRefreshGallery}
                   currentEvent={activeEvent}
                   onStartNewPhoto={handleTakeAnother}
                   onBackToHome={() => setCurrentScreen('landing')}

@@ -1,6 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { Camera, Volume2, Play, Pause, Heart, Download, X, Sparkles, Filter, AlertCircle, ArrowLeft, Infinity as InfinityIcon, Image as ImageIcon } from 'lucide-react';
-import { playSyntheticVoice } from '../utils/audioSynthesis.js';
 import { downloadFile } from '../utils/canvasRenderer.js';
 
 export default function ScreenGallery({
@@ -9,6 +8,9 @@ export default function ScreenGallery({
   onBackToHome,
   triggerErrorState,
   setTriggerErrorState,
+  isLoading = false,
+  loadError = '',
+  onRetryLoad,
   currentEvent = null
 }) {
   const [selectedPhoto, setSelectedPhoto] = useState(null);
@@ -19,10 +21,9 @@ export default function ScreenGallery({
   const [activeAudioId, setActiveAudioId] = useState(null);
   const [activeAudioCurrentTime, setActiveAudioCurrentTime] = useState(0);
   const [activeAudioDuration, setActiveAudioDuration] = useState(0);
+  const [audioErrorId, setAudioErrorId] = useState(null);
 
   const audioPlayerRef = useRef(null);
-  const syntheticPlaybackRef = useRef(null);
-  const syntheticIntervalRef = useRef(null);
 
   // Stop any audio on unmount
   useEffect(() => {
@@ -35,14 +36,6 @@ export default function ScreenGallery({
     if (audioPlayerRef.current) {
       audioPlayerRef.current.pause();
       audioPlayerRef.current = null;
-    }
-    if (syntheticPlaybackRef.current) {
-      syntheticPlaybackRef.current.stop();
-      syntheticPlaybackRef.current = null;
-    }
-    if (syntheticIntervalRef.current) {
-      clearInterval(syntheticIntervalRef.current);
-      syntheticIntervalRef.current = null;
     }
     setActiveAudioId(null);
     setActiveAudioCurrentTime(0);
@@ -94,6 +87,12 @@ export default function ScreenGallery({
 
     // Stop whatever was playing before
     stopCurrentAudio();
+    setAudioErrorId(null);
+
+    if (!item.voiceUrl) {
+      setAudioErrorId(item.id);
+      return;
+    }
 
     const totalSeconds = parseDuration(item.voiceDuration);
     setActiveAudioDuration(totalSeconds);
@@ -110,36 +109,30 @@ export default function ScreenGallery({
           setActiveAudioCurrentTime(audio.currentTime);
         };
 
+        audio.onplaying = () => {
+          setAudioErrorId(null);
+        };
+
         audio.onended = () => {
           stopCurrentAudio();
         };
 
+        audio.onerror = () => {
+          stopCurrentAudio();
+          setAudioErrorId(item.id);
+        };
+
         audio.play().catch((err) => {
-          console.warn('Real audio playback blocked, using smooth synthetic audio:', err);
-          playSyntheticAudioFallback(totalSeconds);
+          console.warn('Voice note playback failed:', err);
+          stopCurrentAudio();
+          setAudioErrorId(item.id);
         });
       } catch (e) {
-        playSyntheticAudioFallback(totalSeconds);
-      }
-    } else {
-      playSyntheticAudioFallback(totalSeconds);
-    }
-  };
-
-  const playSyntheticAudioFallback = (totalSeconds) => {
-    const node = playSyntheticVoice(totalSeconds, () => {
-      stopCurrentAudio();
-    });
-    syntheticPlaybackRef.current = node;
-
-    let sec = 0;
-    syntheticIntervalRef.current = setInterval(() => {
-      sec += 0.5;
-      setActiveAudioCurrentTime(sec);
-      if (sec >= totalSeconds) {
+        console.warn('Voice note player could not be initialized:', e);
         stopCurrentAudio();
+        setAudioErrorId(item.id);
       }
-    }, 500);
+    }
   };
 
   return (
@@ -252,7 +245,26 @@ export default function ScreenGallery({
         Body DOES NOT SCROLL. Only this area scrolls.
       */}
       <main className="flex-1 overflow-y-auto overscroll-contain px-3.5 pt-3 pb-24 relative z-10">
-        {filteredItems.length === 0 ? (
+        {isLoading ? (
+          <div className="h-full flex flex-col items-center justify-center text-center px-4 py-8">
+            <div className="w-8 h-8 border-2 border-[var(--primary)] border-t-transparent rounded-full animate-spin mb-3" />
+            <p className="text-xs text-[var(--text-secondary)]">Memuat galeri event...</p>
+          </div>
+        ) : loadError ? (
+          <div role="alert" className="h-full flex flex-col items-center justify-center text-center px-5 py-8">
+            <AlertCircle className="w-8 h-8 text-rose-600 mb-3" />
+            <p className="text-sm font-medium text-[var(--text-primary)] mb-2">{loadError}</p>
+            {onRetryLoad && (
+              <button
+                type="button"
+                onClick={onRetryLoad}
+                className="mt-2 rounded-full bg-[var(--primary)] px-5 py-2.5 text-xs font-semibold text-white active:scale-95"
+              >
+                Coba muat ulang
+              </button>
+            )}
+          </div>
+        ) : filteredItems.length === 0 ? (
           /* Empty Gallery State (Fixed 100dvh, no page scroll) */
           <div className="h-full flex flex-col items-center justify-center text-center px-4 py-8 my-auto">
             <div className="w-16 h-16 rounded-full bg-[var(--surface-soft)] border border-[var(--border-color)] text-[var(--primary)] flex items-center justify-center mb-3">
@@ -349,9 +361,11 @@ export default function ScreenGallery({
                   {/* Card Bottom Area: Message & INLINE VOICE PLAYER */}
                   <div className="p-2.5 flex flex-col justify-between flex-1 bg-[var(--surface)]">
                     {/* Text greeting */}
-                    <p className="text-[11px] text-[var(--text-primary)] font-sans line-clamp-2 leading-snug italic mb-2">
-                      "{item.guestMessage || 'Selamat menempuh hidup baru!'}"
-                    </p>
+                    {item.guestMessage?.trim() && (
+                      <p className="text-[11px] text-[var(--text-primary)] font-sans line-clamp-2 leading-snug italic mb-2">
+                        "{item.guestMessage}"
+                      </p>
+                    )}
 
                     {/* INLINE VOICE NOTE PLAYER */}
                     {item.hasVoiceNote && (
@@ -392,6 +406,11 @@ export default function ScreenGallery({
                           />
                         </div>
                       </div>
+                    )}
+                    {audioErrorId === item.id && (
+                      <p role="status" className="mb-2 text-[10px] leading-relaxed text-rose-700">
+                        Audio gagal dimuat atau diputar. Periksa koneksi dan akses file audio.
+                      </p>
                     )}
 
                     {/* Card Footer: Frame Name & Likes */}
@@ -485,27 +504,29 @@ export default function ScreenGallery({
                   </span>
                 </div>
 
-                <p className="text-xs text-[var(--text-primary)] font-sans leading-relaxed italic bg-[var(--surface-soft)] p-2.5 rounded-xl border border-[var(--border-color)]/60">
-                  "{selectedPhoto.guestMessage || 'Doa terbaik untuk kedua mempelai tercinta.'}"
-                </p>
+                {selectedPhoto.guestMessage?.trim() && (
+                  <p className="text-xs text-[var(--text-primary)] font-sans leading-relaxed italic bg-[var(--surface-soft)] p-2.5 rounded-xl border border-[var(--border-color)]/60">
+                    "{selectedPhoto.guestMessage}"
+                  </p>
+                )}
 
                 {selectedPhoto.hasVoiceNote && (
-                  <button
-                    onClick={() => handleToggleVoice(selectedPhoto)}
-                    className="w-full p-2.5 bg-[var(--surface-soft)] rounded-xl border border-[var(--border-color)] flex items-center justify-between cursor-pointer active:scale-98"
-                  >
-                    <div className="flex items-center gap-2">
-                      <div className="w-8 h-8 rounded-full bg-[var(--primary)] text-white flex items-center justify-center">
-                        {activeAudioId === selectedPhoto.id ? <Pause className="w-3.5 h-3.5" /> : <Play className="w-3.5 h-3.5 fill-white ml-0.5" />}
-                      </div>
-                      <div className="text-left">
-                        <p className="text-xs font-semibold text-[var(--text-primary)]">Ucapan Suara</p>
-                        <p className="text-[10px] text-[var(--text-secondary)] font-mono">
-                          {activeAudioId === selectedPhoto.id ? formatSeconds(activeAudioCurrentTime) : selectedPhoto.voiceDuration}
-                        </p>
-                      </div>
-                    </div>
-                  </button>
+                  <div className="space-y-1">
+                    <p className="text-xs font-semibold text-[var(--text-primary)]">Ucapan Suara</p>
+                    <audio
+                      controls
+                      preload="none"
+                      src={selectedPhoto.voiceUrl}
+                      className="w-full"
+                      onCanPlay={() => setAudioErrorId(null)}
+                      onError={() => setAudioErrorId(selectedPhoto.id)}
+                    />
+                    {audioErrorId === selectedPhoto.id && (
+                      <p role="status" className="text-[10px] text-rose-700">
+                        Audio gagal dimuat. Periksa koneksi atau akses file audio.
+                      </p>
+                    )}
+                  </div>
                 )}
 
                 <button
