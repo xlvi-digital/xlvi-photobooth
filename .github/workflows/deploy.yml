@@ -34,6 +34,29 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Validate Supabase build configuration
+        run: |
+          node -e '
+            const rawUrl = process.env.VITE_SUPABASE_URL || "";
+            const anonKey = process.env.VITE_SUPABASE_ANON_KEY || "";
+            const baseUrl = rawUrl.trim()
+              .replace(/^["\x27]+|["\x27]+$/g, "")
+              .replace(/\/+$/, "")
+              .replace(/\/(rest|storage|auth)(\/v\d+)?(\/.*)?$/i, "");
+            let validUrl = false;
+            try {
+              const parsed = new URL(baseUrl);
+              validUrl = ["https:", "http:"].includes(parsed.protocol) && !!parsed.hostname;
+            } catch {}
+            if (!validUrl || anonKey.trim().length < 20 || /^\*+$/.test(anonKey.trim())) {
+              console.error("Supabase URL/key GitHub Environment secrets are missing or invalid; no values were printed.");
+              process.exit(1);
+            }
+          '
+        env:
+          VITE_SUPABASE_URL: ${{ secrets.VITE_SUPABASE_URL }}
+          VITE_SUPABASE_ANON_KEY: ${{ secrets.VITE_SUPABASE_ANON_KEY }}
+
       - name: Build
         run: npm run build
         env:

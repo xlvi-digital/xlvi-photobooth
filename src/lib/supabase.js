@@ -82,6 +82,19 @@ export function validateSupabaseConfig() {
 
   if (!rawKey || rawKey.length === 0 || rawKey.includes('your-anon-key')) {
     errors.push('Supabase configuration is missing: VITE_SUPABASE_ANON_KEY');
+  } else if (rawKey.length < 20 || /^\*+$/.test(rawKey)) {
+    errors.push('Supabase configuration contains a placeholder: VITE_SUPABASE_ANON_KEY');
+  }
+
+  if (rawUrl) {
+    try {
+      const parsedUrl = new URL(sanitizeSupabaseUrl(rawUrl));
+      if (!['https:', 'http:'].includes(parsedUrl.protocol) || !parsedUrl.hostname) {
+        errors.push('Supabase configuration is invalid: VITE_SUPABASE_URL');
+      }
+    } catch {
+      errors.push('Supabase configuration is invalid: VITE_SUPABASE_URL');
+    }
   }
 
   return {

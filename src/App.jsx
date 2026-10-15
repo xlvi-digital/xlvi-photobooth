@@ -16,7 +16,12 @@ import AdminLoginView from './components/admin/AdminLoginView.jsx';
 import { EVENT_DATA, INITIAL_GALLERY, FRAMES } from './data/eventData.js';
 import { fetchEventBySlug, fetchAllEvents } from './services/eventService.js';
 import { fetchActiveFramesForEvent } from './services/frameService.js';
-import { createSubmission, fetchSubmissionsForEvent } from './services/submissionService.js';
+import {
+  createSubmission,
+  fetchSubmissionsForEvent,
+  getGalleryErrorKind,
+  getGalleryErrorMessage,
+} from './services/submissionService.js';
 import { getCurrentAdmin, signOutAdmin, getStoredAdminSync } from './services/authService.js';
 import { AlertCircle, CalendarX2, ArrowLeft, Shield, Sparkles } from 'lucide-react';
 
@@ -229,10 +234,15 @@ export default function App() {
             const subs = await fetchSubmissionsForEvent(event.id);
             if (!isCancelled) setGalleryItems(subs);
           } catch (galleryLoadError) {
-            console.error('[GALLERY LOAD ERROR]', galleryLoadError);
+            if (import.meta.env.DEV) {
+              console.warn('[GALLERY LOAD FAILED]', {
+                operation: 'loadEventGallery',
+                kind: getGalleryErrorKind(galleryLoadError),
+              });
+            }
             if (!isCancelled) {
               setGalleryItems([]);
-              setGalleryError('Galeri gagal dimuat dari server. Periksa koneksi atau izin Supabase, lalu coba lagi.');
+              setGalleryError(getGalleryErrorMessage(galleryLoadError));
             }
           } finally {
             if (!isCancelled) setGalleryLoading(false);
@@ -263,9 +273,14 @@ export default function App() {
       const submissions = await fetchSubmissionsForEvent(activeEvent.id);
       setGalleryItems(submissions);
     } catch (err) {
-      console.error('[GALLERY REFRESH ERROR]', err);
+      if (import.meta.env.DEV) {
+        console.warn('[GALLERY REFRESH FAILED]', {
+          operation: 'refreshEventGallery',
+          kind: getGalleryErrorKind(err),
+        });
+      }
       setGalleryItems([]);
-      setGalleryError('Galeri gagal dimuat dari server. Periksa koneksi atau izin Supabase, lalu coba lagi.');
+      setGalleryError(getGalleryErrorMessage(err));
     } finally {
       setGalleryLoading(false);
     }

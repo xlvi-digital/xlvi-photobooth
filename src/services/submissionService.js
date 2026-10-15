@@ -1,7 +1,79 @@
-import { supabase, isSupabaseConfigured, uploadToStorage, normalizeStoragePath, getPublicUrl } from '../lib/supabase.js';
+import {
+  supabase,
+  isSupabaseConfigured,
+  validateSupabaseConfig,
+  uploadToStorage,
+  normalizeStoragePath,
+  getPublicUrl,
+} from '../lib/supabase.js';
 import { INITIAL_GALLERY } from '../data/eventData.js';
 
 const LOCAL_STORAGE_SUBMISSIONS_KEY = 'xlvi_gallery_items_v2';
+
+function sanitizeDiagnosticValue(value) {
+  if (value === null || value === undefined) return null;
+  const anonKey = import.meta.env.VITE_SUPABASE_ANON_KEY;
+  return String(value)
+    .replace(anonKey && anonKey.length >= 20 ? new RegExp(anonKey.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'g') : /$^/, '[redacted-key]')
+    .replace(/\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b/g, '[redacted-token]')
+    .replace(/https?:\/\/[^\s?]+(?:\?[^\s]*)?/gi, '[redacted-url]')
+    .replace(/\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/gi, '[redacted-email]')
+    .replace(/\+?\d[\d\s().-]{7,}\d/g, '[redacted-number]')
+    .slice(0, 500);
+}
+
+export function getGalleryErrorKind(error) {
+  const code = error?.code;
+  const status = Number(error?.status);
+  const message = String(error?.message || '').toLowerCase();
+
+  if (code === 'SUPABASE_CONFIG_MISSING') return 'configuration';
+  if (code === 'GALLERY_EVENT_ID_MISSING') return 'configuration';
+  if (status === 401 || status === 403 || code === '42501') return 'permission';
+  if (code === 'PGRST202') return 'rpc_missing';
+  if (code === 'PGRST205' || code === '42P01') return 'table_missing';
+  if (code === 'PGRST200' || code === 'PGRST201') return 'relationship_mismatch';
+  if (code === 'PGRST204' || code === '42703') return 'column_mismatch';
+  if (error instanceof TypeError || message.includes('failed to fetch') || message.includes('network')) {
+    return 'network';
+  }
+  return 'database_query';
+}
+
+export function getGalleryErrorMessage(error) {
+  switch (getGalleryErrorKind(error)) {
+    case 'configuration':
+      return 'Galeri belum terhubung ke layanan penyimpanan. Silakan coba lagi nanti.';
+    case 'permission':
+      return 'Akses galeri belum tersedia. Silakan hubungi penyelenggara acara.';
+    case 'rpc_missing':
+    case 'table_missing':
+    case 'relationship_mismatch':
+    case 'column_mismatch':
+      return 'Konfigurasi galeri di server belum siap. Silakan hubungi penyelenggara acara.';
+    case 'network':
+      return 'Koneksi ke galeri gagal. Periksa jaringan lalu coba lagi.';
+    default:
+      return 'Galeri gagal dimuat dari server. Silakan coba lagi.';
+  }
+}
+
+function logGalleryQueryError(error, pageStart) {
+  if (!import.meta.env.DEV) return;
+
+  console.error('[SUPABASE GALLERY QUERY FAILED]', {
+    operation: 'fetchSubmissionsForEvent',
+    pageStart,
+    error: {
+      name: sanitizeDiagnosticValue(error?.name),
+      code: sanitizeDiagnosticValue(error?.code),
+      status: sanitizeDiagnosticValue(error?.status),
+      message: sanitizeDiagnosticValue(error?.message),
+      details: sanitizeDiagnosticValue(error?.details),
+      hint: sanitizeDiagnosticValue(error?.hint),
+    },
+  });
+}
 
 function isUUID(str) {
   if (!str || typeof str !== 'string') return false;
@@ -90,93 +162,115 @@ export async function ensureBlob(input, defaultMime = 'image/jpeg') {
  */
 export async function fetchSubmissionsForEvent(eventId = null, filterMode = 'all') {
   if (!eventId) {
-    return [];
+    const error = new Error('An event ID is required to load the public gallery.');
+    error.code = 'GALLERY_EVENT_ID_MISSING';
+    if (import.meta.env.DEV) {
+      console.error('[SUPABASE GALLERY QUERY FAILED]', {
+        operation: 'fetchSubmissionsForEvent',
+        error: { code: error.code, message: error.message },
+      });
+    }
+    throw error;
   }
 
   if (!isSupabaseConfigured()) {
-    throw new Error('Galeri bersama memerlukan konfigurasi Supabase yang valid.');
+    const configErrors = validateSupabaseConfig().errors;
+    const error = new Error(configErrors.join('; ') || 'Supabase configuration is invalid.');
+    error.code = 'SUPABASE_CONFIG_MISSING';
+    if (import.meta.env.DEV) {
+      console.error('[SUPABASE GALLERY QUERY FAILED]', {
+        operation: 'fetchSubmissionsForEvent',
+        error: { code: error.code, message: sanitizeDiagnosticValue(error.message) },
+      });
+    }
+    throw error;
   }
 
-  try {
-    const pageSize = 500;
-    const rows = [];
-    let rangeStart = 0;
+  const pageSize = 500;
+  const rows = [];
+  let rangeStart = 0;
 
-    while (true) {
-      let query = supabase
-        .from('submissions')
-        .select(`
-          *,
-          submission_media (*),
-          voice_notes (*)
-        `)
-        .eq('event_id', eventId)
-        .eq('upload_status', 'completed')
-        .order('created_at', { ascending: false })
-        .range(rangeStart, rangeStart + pageSize - 1);
+  while (true) {
+    let query = supabase
+      .from('submissions')
+      .select(`
+        *,
+        submission_media (*),
+        voice_notes (*)
+      `)
+      .eq('event_id', eventId)
+      .eq('upload_status', 'completed')
+      .order('created_at', { ascending: false })
+      .range(rangeStart, rangeStart + pageSize - 1);
 
-      if (filterMode === 'boomerang') {
-        query = query.eq('media_type', 'boomerang');
-      }
-
-      const { data, error } = await query;
-      if (error) throw error;
-      rows.push(...(data || []));
-      if (!data || data.length < pageSize) break;
-      rangeStart += pageSize;
+    if (filterMode === 'boomerang') {
+      query = query.eq('media_type', 'boomerang');
     }
 
-    const mapped = rows.map((sub) => {
-      const primaryMedia = (sub.submission_media || []).find((media) => media.upload_status === 'completed');
-      const voice = (sub.voice_notes || []).find((note) =>
-        note.upload_status === 'completed' && !!note.file_url
-      );
-      const voiceDurationSeconds = Number(voice?.duration);
-      const formattedVoiceDuration = Number.isFinite(voiceDurationSeconds)
-        ? `${String(Math.floor(voiceDurationSeconds / 60)).padStart(2, '0')}:${String(Math.floor(voiceDurationSeconds % 60)).padStart(2, '0')}`
-        : null;
-      const voiceUrl = voice?.file_url
-        ? getPublicUrl('submissions', voice.file_url)
-        : null;
-
-      return {
-        id: sub.id,
-        eventId: sub.event_id,
-        type: sub.media_type,
-        guestName: sub.guest_name,
-        guestMessage: sub.guest_message,
-        guestPhoto: primaryMedia
-          ? getPublicUrl('submissions', primaryMedia.thumbnail_url || primaryMedia.file_url)
-          : null,
-        mediaUrl: primaryMedia?.file_url ? getPublicUrl('submissions', primaryMedia.file_url) : null,
-        thumbnailUrl: primaryMedia
-          ? getPublicUrl('submissions', primaryMedia.thumbnail_url || primaryMedia.file_url)
-          : null,
-        frameId: sub.frame_id,
-        frameName: sub.frame_name || 'Wedding Frame',
-        hasVoiceNote: !!voiceUrl,
-        voiceDuration: formattedVoiceDuration,
-        voiceUrl,
-        likes: sub.likes || 0,
-        createdAt: new Date(sub.created_at).toLocaleDateString('id-ID', {
-          day: 'numeric',
-          month: 'short',
-          year: 'numeric',
-          hour: '2-digit',
-          minute: '2-digit',
-        }),
-      };
-    });
-
-    if (filterMode === 'voice') {
-      return mapped.filter((item) => item.hasVoiceNote);
+    let result;
+    try {
+      result = await query;
+    } catch (error) {
+      logGalleryQueryError(error, rangeStart);
+      throw error;
     }
-
-    return mapped;
-  } catch (err) {
-    console.error('fetchSubmissionsForEvent exception:', err);
-    throw err;
+    const { data, error } = result;
+    if (error) {
+      logGalleryQueryError(error, rangeStart);
+      throw error;
+    }
+    rows.push(...(data || []));
+    if (!data || data.length < pageSize) break;
+    rangeStart += pageSize;
   }
+
+  const mapped = rows.map((sub) => {
+    const primaryMedia = (sub.submission_media || []).find((media) => media.upload_status === 'completed');
+    const voice = (sub.voice_notes || []).find((note) =>
+      note.upload_status === 'completed' && !!note.file_url
+    );
+    const voiceDurationSeconds = Number(voice?.duration);
+    const formattedVoiceDuration = Number.isFinite(voiceDurationSeconds)
+      ? `${String(Math.floor(voiceDurationSeconds / 60)).padStart(2, '0')}:${String(Math.floor(voiceDurationSeconds % 60)).padStart(2, '0')}`
+      : null;
+    const voiceUrl = voice?.file_url
+      ? getPublicUrl('submissions', voice.file_url)
+      : null;
+
+    return {
+      id: sub.id,
+      eventId: sub.event_id,
+      type: sub.media_type,
+      guestName: sub.guest_name,
+      guestMessage: sub.guest_message,
+      guestPhoto: primaryMedia
+        ? getPublicUrl('submissions', primaryMedia.thumbnail_url || primaryMedia.file_url)
+        : null,
+      mediaUrl: primaryMedia?.file_url ? getPublicUrl('submissions', primaryMedia.file_url) : null,
+      thumbnailUrl: primaryMedia
+        ? getPublicUrl('submissions', primaryMedia.thumbnail_url || primaryMedia.file_url)
+        : null,
+      frameId: sub.frame_id,
+      frameName: sub.frame_name || 'Wedding Frame',
+      hasVoiceNote: !!voiceUrl,
+      voiceDuration: formattedVoiceDuration,
+      voiceUrl,
+      likes: sub.likes || 0,
+      createdAt: new Date(sub.created_at).toLocaleDateString('id-ID', {
+        day: 'numeric',
+        month: 'short',
+        year: 'numeric',
+        hour: '2-digit',
+        minute: '2-digit',
+      }),
+    };
+  });
+
+  if (filterMode === 'voice') {
+    return mapped.filter((item) => item.hasVoiceNote);
+  }
+
+  return mapped;
 }
 
 /**
