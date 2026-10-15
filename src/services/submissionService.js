@@ -75,6 +75,55 @@ function logGalleryQueryError(error, pageStart) {
   });
 }
 
+// voice_notes.submission_id is UNIQUE, so PostgREST may return that relation as an object;
+// non-unique relations such as submission_media are usually returned as arrays.
+function normalizeSubmissionRelation(value, relationName, submissionId) {
+  if (value === null || value === undefined) return [];
+
+  const records = Array.isArray(value)
+    ? value
+    : (typeof value === 'object' ? [value] : []);
+
+  if (!Array.isArray(value) && typeof value !== 'object' && import.meta.env.DEV) {
+    console.warn('[SUPABASE SUBMISSION RELATION SHAPE]', {
+      relation: relationName,
+      receivedType: typeof value,
+      action: 'Ignoring invalid relation value; preserving submission data.',
+    });
+  }
+
+  const relatedRecords = records.filter((record) => {
+    if (!record || typeof record !== 'object' || Array.isArray(record)) return false;
+    return record.submission_id === submissionId;
+  });
+
+  if (import.meta.env.DEV && relatedRecords.length !== records.length) {
+    console.warn('[SUPABASE SUBMISSION RELATION MISMATCH]', {
+      relation: relationName,
+      receivedCount: records.length,
+      matchedCount: relatedRecords.length,
+      action: 'Ignoring malformed or unrelated embedded records.',
+    });
+  }
+
+  return relatedRecords;
+}
+
+function logAdminSubmissionQueryError(error) {
+  if (!import.meta.env.DEV) return;
+  console.error('[SUPABASE ADMIN SUBMISSIONS QUERY FAILED]', {
+    operation: 'fetchAllSubmissionsAdmin',
+    error: {
+      name: sanitizeDiagnosticValue(error?.name),
+      code: sanitizeDiagnosticValue(error?.code),
+      status: sanitizeDiagnosticValue(error?.status),
+      message: sanitizeDiagnosticValue(error?.message),
+      details: sanitizeDiagnosticValue(error?.details),
+      hint: sanitizeDiagnosticValue(error?.hint),
+    },
+  });
+}
+
 function isUUID(str) {
   if (!str || typeof str !== 'string') return false;
   return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(str.trim());
@@ -225,8 +274,10 @@ export async function fetchSubmissionsForEvent(eventId = null, filterMode = 'all
   }
 
   const mapped = rows.map((sub) => {
-    const primaryMedia = (sub.submission_media || []).find((media) => media.upload_status === 'completed');
-    const voice = (sub.voice_notes || []).find((note) =>
+    const media = normalizeSubmissionRelation(sub.submission_media, 'submission_media', sub.id);
+    const voices = normalizeSubmissionRelation(sub.voice_notes, 'voice_notes', sub.id);
+    const primaryMedia = media.find((item) => item.upload_status === 'completed');
+    const voice = voices.find((note) =>
       note.upload_status === 'completed' && !!note.file_url
     );
     const voiceDurationSeconds = Number(voice?.duration);
@@ -341,17 +392,20 @@ export async function fetchAllSubmissionsAdmin({ eventId = null, mediaType = 'al
       if (!fallbackResult.error) {
         data = fallbackResult.data;
         error = null;
+      } else {
+        error = fallbackResult.error;
       }
     }
 
     if (error) {
-      console.warn('fetchAllSubmissionsAdmin error:', error);
-      return getLocalSubmissions();
+      throw error;
     }
 
     return (data || []).map((sub) => {
-      const primaryMedia = (sub.submission_media || []).find((media) => media.upload_status === 'completed');
-      const voice = (sub.voice_notes || []).find((note) =>
+      const media = normalizeSubmissionRelation(sub.submission_media, 'submission_media', sub.id);
+      const voices = normalizeSubmissionRelation(sub.voice_notes, 'voice_notes', sub.id);
+      const primaryMedia = media.find((item) => item.upload_status === 'completed');
+      const voice = voices.find((note) =>
         note.upload_status === 'completed' && !!note.file_url
       );
       const voiceDurationSeconds = Number(voice?.duration);
@@ -379,8 +433,8 @@ export async function fetchAllSubmissionsAdmin({ eventId = null, mediaType = 'al
       };
     });
   } catch (err) {
-    console.error('fetchAllSubmissionsAdmin error:', err);
-    return getLocalSubmissions();
+    logAdminSubmissionQueryError(err);
+    throw err;
   }
 }
 
