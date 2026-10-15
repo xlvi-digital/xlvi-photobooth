@@ -5,6 +5,7 @@ import {
   uploadToStorage,
   normalizeStoragePath,
   getPublicUrl,
+  logSupabaseOperationError,
 } from '../lib/supabase.js';
 import { INITIAL_GALLERY } from '../data/eventData.js';
 
@@ -127,6 +128,18 @@ function logAdminSubmissionQueryError(error) {
 function isUUID(str) {
   if (!str || typeof str !== 'string') return false;
   return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(str.trim());
+}
+
+function assertSubmissionStoragePath(path, eventId, submissionId, filenamePattern) {
+  const segments = path.split('/');
+  if (
+    segments.length !== 3
+    || segments[0] !== eventId
+    || segments[1] !== submissionId
+    || !filenamePattern.test(segments[2])
+  ) {
+    throw new Error('Path upload tidak sesuai dengan format submission yang diizinkan.');
+  }
 }
 
 function getLocalSubmissions() {
@@ -466,6 +479,9 @@ export async function createSubmission({
   if (!isSupabaseConfigured()) {
     throw new Error('Supabase belum dikonfigurasi. Foto dan ucapan tidak dapat disimpan untuk galeri bersama.');
   }
+  if (!isUUID(eventId)) {
+    throw new Error('ID event tidak valid. Muat ulang event sebelum mengirim foto.');
+  }
 
   // 1. Generate crypto.randomUUID()
   const submissionId =
@@ -506,20 +522,36 @@ export async function createSubmission({
       const mediaMime = isVideo ? (primaryBlob.type || 'video/mp4') : 'image/jpeg';
       const mainRelativePath = `submissions/${eventId}/${submissionId}/${isVideo ? 'boomerang' : 'photo'}.${mediaExt}`;
 
-      const uploadResult = await uploadToStorage('submissions', mainRelativePath, primaryBlob, mediaMime, false);
-      uploadedMediaUrl = uploadResult.publicUrl;
-      uploadedMediaPath = uploadResult.path;
+      const uploadResult = await uploadToStorage(
+        'submissions',
+        mainRelativePath,
+        primaryBlob,
+        mediaMime,
+        false,
+        isVideo ? 'upload boomerang media' : 'upload primary photo',
+      );
       uploadedFilesToCleanup.push({ bucket: 'submissions', path: uploadResult.path });
+      uploadedMediaPath = normalizeStoragePath('submissions', uploadResult.path);
+      assertSubmissionStoragePath(uploadedMediaPath, eventId, submissionId, isVideo ? /^boomerang\.(mp4|webm)$/ : /^photo\.jpg$/);
+      uploadedMediaUrl = uploadResult.publicUrl;
 
       // 2c. Thumbnail upload (always JPEG)
       if (thumbnailBlobOrUrl && thumbnailBlobOrUrl !== mediaBlobOrUrl) {
         const thumbBlob = await ensureBlob(thumbnailBlobOrUrl, 'image/jpeg');
         if (thumbBlob && thumbBlob.size > 0) {
           const thumbPath = `submissions/${eventId}/${submissionId}/thumb.jpg`;
-          const thumbResult = await uploadToStorage('submissions', thumbPath, thumbBlob, 'image/jpeg', false);
-          uploadedThumbUrl = thumbResult.publicUrl;
-          uploadedThumbPath = thumbResult.path;
+          const thumbResult = await uploadToStorage(
+            'submissions',
+            thumbPath,
+            thumbBlob,
+            'image/jpeg',
+            false,
+            'upload thumbnail',
+          );
           uploadedFilesToCleanup.push({ bucket: 'submissions', path: thumbResult.path });
+          uploadedThumbPath = normalizeStoragePath('submissions', thumbResult.path);
+          assertSubmissionStoragePath(uploadedThumbPath, eventId, submissionId, /^thumb\.jpg$/);
+          uploadedThumbUrl = thumbResult.publicUrl;
         } else {
           uploadedThumbUrl = uploadedMediaUrl;
           uploadedThumbPath = uploadedMediaPath;
@@ -538,11 +570,30 @@ export async function createSubmission({
               const rawBlob = await ensureBlob(rawItem, 'image/jpeg');
               if (rawBlob && rawBlob.size > 0) {
                 const rawPath = `submissions/${eventId}/${submissionId}/photo-${i + 1}.jpg`;
-                const rawResult = await uploadToStorage('submissions', rawPath, rawBlob, 'image/jpeg', false);
+                const rawResult = await uploadToStorage(
+                  'submissions',
+                  rawPath,
+                  rawBlob,
+                  'image/jpeg',
+                  false,
+                  `upload multi-photo ${i + 1}`,
+                );
                 uploadedFilesToCleanup.push({ bucket: 'submissions', path: rawResult.path });
+                assertSubmissionStoragePath(
+                  normalizeStoragePath('submissions', rawResult.path),
+                  eventId,
+                  submissionId,
+                  /^photo-[1-3]\.jpg$/,
+                );
               }
             } catch (rawErr) {
-              console.warn(`Warning uploading raw photo ${i + 1}:`, rawErr);
+              if (import.meta.env.DEV) {
+                console.warn('[SUBMISSION MULTI-PHOTO UPLOAD FAILED]', {
+                  operation: `upload multi-photo ${i + 1}`,
+                  message: sanitizeDiagnosticValue(rawErr?.message),
+                  code: sanitizeDiagnosticValue(rawErr?.code),
+                });
+              }
             }
           }
         }
@@ -567,43 +618,73 @@ export async function createSubmission({
           'aac': 'aac',
         }[voiceSubtype] || 'audio';
         const voicePath = `submissions/${eventId}/${submissionId}/voice.${voiceExtension}`;
-        const voiceResult = await uploadToStorage('submissions', voicePath, voiceAudio, voiceMime, false);
-        uploadedVoiceUrl = voiceResult.publicUrl;
-        uploadedVoicePath = voiceResult.path;
+        const voiceResult = await uploadToStorage(
+          'submissions',
+          voicePath,
+          voiceAudio,
+          voiceMime,
+          false,
+          'upload voice note',
+        );
         uploadedFilesToCleanup.push({ bucket: 'submissions', path: voiceResult.path });
+        uploadedVoicePath = normalizeStoragePath('submissions', voiceResult.path);
+        assertSubmissionStoragePath(uploadedVoicePath, eventId, submissionId, /^voice\.[a-z0-9]+$/);
+        uploadedVoiceUrl = voiceResult.publicUrl;
       }
 
       // 3. Commit all linked records atomically after every asset upload succeeds.
       const frameIdToSave = frame?.id && isUUID(frame.id) ? frame.id : null;
       const [minutes = '0', seconds = '0'] = String(voiceDuration || '00:15').split(':');
       const voiceDurationSeconds = (parseInt(minutes, 10) || 0) * 60 + (parseInt(seconds, 10) || 0);
-      const { error: commitError } = await supabase.rpc('create_public_submission', {
-        p_submission_id: submissionId,
-        p_event_id: eventId,
-        p_guest_name: guestName.trim() || 'Tamu Istimewa',
-        p_guest_message: guestMessage.trim() || null,
-        p_media_type: mediaType,
-        p_frame_id: frameIdToSave,
-        p_frame_name: frame?.name || 'Wedding Frame',
-        p_frame_snapshot_config: {
-          frame_name: frame?.name,
-          slots_count: frame?.photo_count || frame?.photoCount || 1,
-          slots: frame?.frame_slots || frame?.slots || [],
-        },
-        p_media_path: uploadedMediaPath,
-        p_thumbnail_path: uploadedThumbPath,
-        p_media_duration: isVideo ? 2 : null,
-        p_voice_path: uploadedVoicePath,
-        p_voice_duration: uploadedVoicePath ? voiceDurationSeconds : null,
-        p_voice_mime_type: uploadedVoicePath ? uploadedVoiceMime : null,
-      });
+      let commitResult;
+      try {
+        commitResult = await supabase.rpc('create_public_submission', {
+          p_submission_id: submissionId,
+          p_event_id: eventId,
+          p_guest_name: guestName.trim() || 'Tamu Istimewa',
+          p_guest_message: guestMessage.trim() || null,
+          p_media_type: mediaType,
+          p_frame_id: frameIdToSave,
+          p_frame_name: frame?.name || 'Wedding Frame',
+          p_frame_snapshot_config: {
+            frame_name: frame?.name,
+            slots_count: frame?.photo_count || frame?.photoCount || 1,
+            slots: frame?.frame_slots || frame?.slots || [],
+          },
+          p_media_path: uploadedMediaPath,
+          p_thumbnail_path: uploadedThumbPath,
+          p_media_duration: isVideo ? 2 : null,
+          p_voice_path: uploadedVoicePath,
+          p_voice_duration: uploadedVoicePath ? voiceDurationSeconds : null,
+          p_voice_mime_type: uploadedVoicePath ? uploadedVoiceMime : null,
+        });
+      } catch (error) {
+        logSupabaseOperationError('call create_public_submission RPC', error, {
+          bucket: 'submissions',
+          mediaPath: uploadedMediaPath,
+          thumbnailPath: uploadedThumbPath,
+          voicePath: uploadedVoicePath,
+        });
+        throw error;
+      }
+      const { error: commitError } = commitResult;
 
       if (commitError) {
-        console.error('[SUPABASE ATOMIC SUBMISSION ERROR]', commitError);
+        logSupabaseOperationError('call create_public_submission RPC', commitError, {
+          bucket: 'submissions',
+          mediaPath: uploadedMediaPath,
+          thumbnailPath: uploadedThumbPath,
+          voicePath: uploadedVoicePath,
+        });
         throw commitError;
       }
   } catch (err) {
-      console.error('[SUPABASE SAVE PHOTO FAILED - CLEANING UP ORPHAN FILES]', err);
+      logSupabaseOperationError('prepare or save submission', err, {
+        bucket: 'submissions',
+        mediaPath: uploadedMediaPath,
+        thumbnailPath: uploadedThumbPath,
+        voicePath: uploadedVoicePath,
+      });
 
       // Clean up any uploaded storage files to prevent orphan files
       if (uploadedFilesToCleanup.length > 0) {
@@ -611,12 +692,16 @@ export async function createSubmission({
           try {
             const { error: cleanupError } = await supabase.storage.from(item.bucket).remove([item.path]);
             if (cleanupError) {
-              console.warn('[CLEANUP ORPHAN FILE FAILED]', item.path, cleanupError);
-            } else {
-              console.log('[CLEANUP ORPHAN FILE SUCCESS]', item.path);
+              logSupabaseOperationError('cleanup orphan submission file', cleanupError, {
+                bucket: item.bucket,
+                path: item.path,
+              });
             }
           } catch (cleanErr) {
-            console.warn('[CLEANUP ORPHAN FILE FAILED]', item.path, cleanErr);
+            logSupabaseOperationError('cleanup orphan submission file', cleanErr, {
+              bucket: item.bucket,
+              path: item.path,
+            });
           }
         }
       }

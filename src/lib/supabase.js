@@ -139,11 +139,47 @@ export const supabase = isSupabaseConfigured()
       }
     );
 
+function sanitizeStorageDiagnosticValue(value) {
+  if (value === null || value === undefined) return null;
+  const anonKey = rawSupabaseAnonKey.trim();
+  return String(value)
+    .replace(anonKey && anonKey.length >= 20 ? new RegExp(anonKey.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'g') : /$^/, '[redacted-key]')
+    .replace(/\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b/g, '[redacted-token]')
+    .replace(/\bsb_(?:secret|publishable)_[A-Za-z0-9_-]+\b/g, '[redacted-key]')
+    .replace(/https?:\/\/[^\s?]+(?:\?[^\s]*)?/gi, '[redacted-url]')
+    .slice(0, 500);
+}
+
+export function logSupabaseOperationError(operation, error, context = {}) {
+  if (!import.meta.env.DEV) return;
+
+  console.error('[SUPABASE OPERATION FAILED]', {
+    operation,
+    ...context,
+    error: {
+      name: sanitizeStorageDiagnosticValue(error?.name),
+      status: sanitizeStorageDiagnosticValue(error?.status),
+      statusCode: sanitizeStorageDiagnosticValue(error?.statusCode),
+      code: sanitizeStorageDiagnosticValue(error?.code),
+      message: sanitizeStorageDiagnosticValue(error?.message),
+      details: sanitizeStorageDiagnosticValue(error?.details),
+      hint: sanitizeStorageDiagnosticValue(error?.hint),
+    },
+  });
+}
+
 /**
  * Upload helper to Supabase Storage with strict relative path validation
  * Default bucket: 'frames'
  */
-export async function uploadToStorage(bucketName = 'frames', filePath, fileOrBlob, contentType = 'image/png', upsert = true) {
+export async function uploadToStorage(
+  bucketName = 'frames',
+  filePath,
+  fileOrBlob,
+  contentType = 'image/png',
+  upsert = true,
+  operation = 'storage upload',
+) {
   if (!isSupabaseConfigured()) {
     console.warn(`Supabase storage upload simulated (credentials not configured) for: ${bucketName}/${filePath}`);
     if (fileOrBlob instanceof Blob || fileOrBlob instanceof File) {
@@ -165,13 +201,30 @@ export async function uploadToStorage(bucketName = 'frames', filePath, fileOrBlo
   const bucket = supabase.storage.from(bucketName);
   const detectedType = fileOrBlob?.type || contentType;
 
-  const { data, error } = await bucket.upload(cleanPath, fileOrBlob, {
-    contentType: detectedType,
-    upsert,
-  });
+  let result;
+  try {
+    result = await bucket.upload(cleanPath, fileOrBlob, {
+      contentType: detectedType,
+      upsert,
+    });
+  } catch (error) {
+    logSupabaseOperationError(operation, error, {
+      bucket: bucketName,
+      path: cleanPath,
+      upsert,
+      contentType: detectedType,
+    });
+    throw error;
+  }
+  const { data, error } = result;
 
   if (error) {
-    console.error(`Storage upload error in bucket "${bucketName}" at path "${cleanPath}":`, error);
+    logSupabaseOperationError(operation, error, {
+      bucket: bucketName,
+      path: cleanPath,
+      upsert,
+      contentType: detectedType,
+    });
     throw error;
   }
 
