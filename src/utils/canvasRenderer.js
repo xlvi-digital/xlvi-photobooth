@@ -79,30 +79,22 @@ export function drawPhotoboothFrameToCanvas(ctx, width, height, img, frameId, is
       }
     }
 
-    // Draw photo with cover aspect ratio inside the box
+    // Keep the complete photo visible inside the frame's photo area.
     const imgW = img.videoWidth || img.naturalWidth || img.width || 1;
     const imgH = img.videoHeight || img.naturalHeight || img.height || 1;
     const imgAspect = imgW / imgH;
     const targetAspect = photoWidth / photoHeight;
-    let drawW, drawH, drawX, drawY;
-
-    if (imgAspect > targetAspect) {
-      drawH = photoHeight;
-      drawW = photoHeight * imgAspect;
-      drawX = photoInsetX - (drawW - photoWidth) / 2;
-      drawY = photoInsetY;
-    } else {
-      drawW = photoWidth;
-      drawH = photoWidth / imgAspect;
-      drawX = photoInsetX;
-      drawY = photoInsetY - (drawH - photoHeight) / 2;
-    }
+    const scale = Math.min(photoWidth / imgW, photoHeight / imgH);
+    const drawW = imgW * scale;
+    const drawH = imgH * scale;
+    const drawX = photoInsetX + ((photoWidth - drawW) / 2);
+    const drawY = photoInsetY + ((photoHeight - drawH) / 2);
 
     if (isMirrored) {
       ctx.save();
       ctx.translate(photoInsetX + photoWidth, 0);
       ctx.scale(-1, 1);
-      ctx.drawImage(img, photoInsetX - drawX, drawY, drawW, drawH);
+      ctx.drawImage(img, drawX, drawY, drawW, drawH);
       ctx.restore();
     } else {
       ctx.drawImage(img, drawX, drawY, drawW, drawH);

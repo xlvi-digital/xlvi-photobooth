@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react';
-import { Camera, RefreshCw, Zap, Upload, Sparkles, Repeat, Infinity as InfinityIcon, RotateCcw } from 'lucide-react';
+import { Camera, RefreshCw, Zap, Upload, Sparkles, Repeat, Infinity as InfinityIcon, RotateCcw, Minus, Plus } from 'lucide-react';
 import FrameOverlay from './FrameOverlay.jsx';
 import FilterSelector from './FilterSelector.jsx';
 import { playCameraShutterSound, playCountdownBeep } from '../utils/audioSynthesis.js';
@@ -28,10 +28,15 @@ export default function ScreenCamera({
   const [captureMode, setCaptureMode] = useState('photo'); // 'photo' | 'boomerang'
   const [stream, setStream] = useState(null);
   const [cameraError, setCameraError] = useState(null);
-  const [facingMode, setFacingMode] = useState('user'); // 'user' (front) or 'environment' (back)
+  const [facingMode, setFacingMode] = useState('environment'); // Prefer the rear camera for event photos.
   const [isCountingDown, setIsCountingDown] = useState(false);
   const [countdownValue, setCountdownValue] = useState(3);
   const [isFlashActive, setIsFlashActive] = useState(false);
+  const [flashSupported, setFlashSupported] = useState(false);
+  const [flashBusy, setFlashBusy] = useState(false);
+  const [flashMessage, setFlashMessage] = useState('');
+  const [zoomRange, setZoomRange] = useState(null);
+  const [zoomValue, setZoomValue] = useState(null);
   const [flashAnimation, setFlashAnimation] = useState(false);
 
   // Photo filter preset state
@@ -54,9 +59,11 @@ export default function ScreenCamera({
   const fileInputRef = useRef(null);
   const streamRef = useRef(null);
   const countdownIntervalRef = useRef(null);
+  const cameraRequestIdRef = useRef(0);
 
   // Stop active media stream tracks safely and thoroughly
   const stopCurrentStream = useCallback(() => {
+    cameraRequestIdRef.current += 1;
     if (streamRef.current) {
       console.log('[CAMERA] stream stopped');
       streamRef.current.getTracks().forEach((track) => {
@@ -74,32 +81,80 @@ export default function ScreenCamera({
       } catch (e) {}
     }
     setStream(null);
+    setIsFlashActive(false);
+    setFlashSupported(false);
+    setFlashBusy(false);
+    setZoomRange(null);
+    setZoomValue(null);
   }, []);
 
   // Initialize camera with facingMode and attach to videoRef safely
   const startCamera = useCallback(async (facing) => {
     setCameraError(null);
     stopCurrentStream();
+    setFlashMessage('');
+    const requestId = cameraRequestIdRef.current;
 
     try {
+      if (window.isSecureContext === false) {
+        throw new Error('Akses kamera memerlukan koneksi HTTPS. Buka halaman melalui GitHub Pages atau koneksi aman.');
+      }
       if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
         throw new Error('Kamera tidak didukung di browser ini.');
       }
 
       const constraints = {
         video: {
-          facingMode: { ideal: facing },
-          width: { ideal: 1080 },
-          height: { ideal: 1440 },
-          aspectRatio: { ideal: 0.75 }
+          facingMode: facing === 'environment' ? { ideal: 'environment' } : 'user'
         },
         audio: false,
       };
 
       const mediaStream = await navigator.mediaDevices.getUserMedia(constraints);
+      if (requestId !== cameraRequestIdRef.current) {
+        mediaStream.getTracks().forEach((track) => track.stop());
+        return;
+      }
+
       streamRef.current = mediaStream;
       setStream(mediaStream);
       console.log('[CAMERA] stream started');
+
+      const videoTrack = mediaStream.getVideoTracks()[0];
+      let capabilities = null;
+      try {
+        capabilities = videoTrack?.getCapabilities?.() || null;
+      } catch (capabilityError) {
+        console.warn('Camera capabilities unavailable:', capabilityError);
+      }
+      const supportsTorch = capabilities?.torch === true && typeof videoTrack?.applyConstraints === 'function';
+      setFlashSupported(supportsTorch);
+      setFlashMessage(supportsTorch ? '' : 'Flash tidak tersedia pada kamera atau browser ini.');
+
+      const zoomCapabilities = capabilities?.zoom;
+      if (
+        zoomCapabilities &&
+        Number.isFinite(zoomCapabilities.min) &&
+        Number.isFinite(zoomCapabilities.max) &&
+        zoomCapabilities.max > zoomCapabilities.min &&
+        typeof videoTrack?.applyConstraints === 'function'
+      ) {
+        const currentZoom = videoTrack.getSettings?.().zoom;
+        const defaultZoom = Number.isFinite(currentZoom)
+          ? currentZoom
+          : Math.max(zoomCapabilities.min, Math.min(zoomCapabilities.max, 1));
+        setZoomRange({
+          min: zoomCapabilities.min,
+          max: zoomCapabilities.max,
+          step: Number.isFinite(zoomCapabilities.step) && zoomCapabilities.step > 0
+            ? zoomCapabilities.step
+            : (zoomCapabilities.max - zoomCapabilities.min) / 10
+        });
+        setZoomValue(defaultZoom);
+      } else {
+        setZoomRange(null);
+        setZoomValue(null);
+      }
 
       if (videoRef.current) {
         videoRef.current.srcObject = mediaStream;
@@ -111,7 +166,15 @@ export default function ScreenCamera({
       }
     } catch (err) {
       console.warn('Camera access issue:', err);
-      setCameraError('Silakan izinkan akses kamera pada browser untuk melanjutkan.');
+      if (requestId !== cameraRequestIdRef.current) return;
+      const errorMessages = {
+        NotAllowedError: 'Izin kamera ditolak. Izinkan akses kamera melalui pengaturan situs browser, lalu coba lagi.',
+        NotFoundError: 'Kamera tidak ditemukan pada perangkat ini.',
+        NotReadableError: 'Kamera sedang digunakan aplikasi lain. Tutup aplikasi tersebut lalu coba lagi.',
+        OverconstrainedError: 'Kamera tidak dapat memenuhi pengaturan perangkat. Coba ganti kamera.',
+        SecurityError: 'Akses kamera memerlukan koneksi HTTPS yang aman.'
+      };
+      setCameraError(errorMessages[err.name] || err.message || 'Kamera gagal dibuka. Periksa izin browser dan coba lagi.');
     }
   }, [stopCurrentStream]);
 
@@ -143,7 +206,56 @@ export default function ScreenCamera({
   // Flip Camera front ↔ rear
   const toggleCamera = () => {
     if (isCountingDown || isRecordingBoomerang || isProcessingBoomerang) return;
+    setFlashMessage('');
     setFacingMode((prev) => (prev === 'user' ? 'environment' : 'user'));
+  };
+
+  const toggleFlash = async () => {
+    const videoTrack = streamRef.current?.getVideoTracks()[0];
+    if (!flashSupported || !videoTrack || flashBusy) return;
+
+    const nextFlashState = !isFlashActive;
+    setFlashBusy(true);
+    setFlashMessage('');
+    try {
+      await videoTrack.applyConstraints({ advanced: [{ torch: nextFlashState }] });
+      if (streamRef.current?.getVideoTracks()[0] === videoTrack) {
+        setIsFlashActive(nextFlashState);
+      }
+    } catch (err) {
+      console.warn('Flash control failed:', err);
+      if (streamRef.current?.getVideoTracks()[0] === videoTrack) {
+        setFlashMessage('Flash gagal diubah. Kamera atau browser mungkin tidak mengizinkan lampu.');
+      }
+    } finally {
+      if (streamRef.current?.getVideoTracks()[0] === videoTrack) {
+        setFlashBusy(false);
+      }
+    }
+  };
+
+  const changeZoom = async (direction) => {
+    const videoTrack = streamRef.current?.getVideoTracks()[0];
+    if (!zoomRange || !videoTrack || !Number.isFinite(zoomValue)) return;
+
+    const nextZoom = Math.max(
+      zoomRange.min,
+      Math.min(zoomRange.max, zoomValue + (zoomRange.step * direction))
+    );
+    if (nextZoom === zoomValue) return;
+
+    try {
+      await videoTrack.applyConstraints({ advanced: [{ zoom: nextZoom }] });
+      if (streamRef.current?.getVideoTracks()[0] === videoTrack) {
+        const appliedZoom = videoTrack.getSettings?.().zoom;
+        setZoomValue(Number.isFinite(appliedZoom) ? appliedZoom : nextZoom);
+      }
+    } catch (err) {
+      console.warn('Camera zoom control failed:', err);
+      if (streamRef.current?.getVideoTracks()[0] === videoTrack) {
+        setFlashMessage('Pengaturan zoom tidak dapat diterapkan pada kamera ini.');
+      }
+    }
   };
 
   // Main capture trigger
@@ -190,15 +302,14 @@ export default function ScreenCamera({
 
     if (video && video.videoWidth > 0 && !cameraError) {
       const canvas = document.createElement('canvas');
-      const targetWidth = 1080;
-      const targetHeight = 1440;
-      canvas.width = targetWidth;
-      canvas.height = targetHeight;
+      const captureScale = Math.min(1, 1920 / Math.max(video.videoWidth, video.videoHeight));
+      canvas.width = Math.round(video.videoWidth * captureScale);
+      canvas.height = Math.round(video.videoHeight * captureScale);
       const ctx = canvas.getContext('2d');
 
       // Mirror user front camera
       if (facingMode === 'user') {
-        ctx.translate(targetWidth, 0);
+        ctx.translate(canvas.width, 0);
         ctx.scale(-1, 1);
       }
 
@@ -211,23 +322,7 @@ export default function ScreenCamera({
         }
       }
 
-      const vidAspect = video.videoWidth / video.videoHeight;
-      const targetAspect = targetWidth / targetHeight;
-      let drawW, drawH, drawX, drawY;
-
-      if (vidAspect > targetAspect) {
-        drawH = targetHeight;
-        drawW = targetHeight * vidAspect;
-        drawX = (targetWidth - drawW) / 2;
-        drawY = 0;
-      } else {
-        drawW = targetWidth;
-        drawH = targetWidth / vidAspect;
-        drawX = 0;
-        drawY = (targetHeight - drawH) / 2;
-      }
-
-      ctx.drawImage(video, drawX, drawY, drawW, drawH);
+      ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
       dataUrl = canvas.toDataURL('image/jpeg', 0.94);
     } else {
       // Fallback sample photos
@@ -330,8 +425,9 @@ export default function ScreenCamera({
         }
 
         const c = document.createElement('canvas');
-        c.width = 720;
-        c.height = 960;
+        const frameScale = Math.min(1, 720 / Math.max(video.videoWidth, video.videoHeight));
+        c.width = Math.round(video.videoWidth * frameScale);
+        c.height = Math.round(video.videoHeight * frameScale);
         const cx = c.getContext('2d');
 
         if (facingMode === 'user') {
@@ -346,22 +442,7 @@ export default function ScreenCamera({
           } catch (e) {}
         }
 
-        const vidAspect = video.videoWidth / video.videoHeight;
-        const targetAspect = c.width / c.height;
-        let dw, dh, dx, dy;
-        if (vidAspect > targetAspect) {
-          dh = c.height;
-          dw = c.height * vidAspect;
-          dx = (c.width - dw) / 2;
-          dy = 0;
-        } else {
-          dw = c.width;
-          dh = c.width / vidAspect;
-          dx = 0;
-          dy = (c.height - dh) / 2;
-        }
-
-        cx.drawImage(video, dx, dy, dw, dh);
+        cx.drawImage(video, 0, 0, c.width, c.height);
         capturedFrames.push(c);
 
         frameCount++;
@@ -571,8 +652,8 @@ export default function ScreenCamera({
         </p>
       </div>
 
-      {/* Main Camera Viewport (Portrait 3:4 ratio) */}
-      <div className="relative w-full aspect-[3/4] bg-neutral-900 rounded-3xl overflow-hidden shadow-lg border border-[#e8ded2] flex items-center justify-center">
+      {/* Portrait viewport; the complete camera image stays visible inside it. */}
+      <div className="relative w-full aspect-[3/4] bg-[#faf7f2] rounded-3xl overflow-hidden shadow-lg border border-[#e8ded2] flex items-center justify-center">
         {/* Live Video Feed with Filter Effect applied ONLY to the video feed */}
         <video
           ref={videoRef}
@@ -582,7 +663,7 @@ export default function ScreenCamera({
           style={{
             filter: activeFilterPreset?.cssFilter || 'none',
           }}
-          className={`w-full h-full object-cover transition-all duration-200 ${
+          className={`w-full h-full object-contain transition-all duration-200 ${
             facingMode === 'user' ? '-scale-x-100' : ''
           } ${cameraError ? 'hidden' : 'block'}`}
         />
@@ -594,7 +675,7 @@ export default function ScreenCamera({
               <Camera className="w-6 h-6" />
             </div>
             <h4 className="font-serif text-lg text-[#3a2820] font-medium mb-1">
-              Kamera belum diizinkan
+              Kamera tidak dapat diakses
             </h4>
             <p className="text-xs text-[#7a6456] mb-4 max-w-xs leading-relaxed">
               {cameraError}
@@ -680,26 +761,63 @@ export default function ScreenCamera({
         {/* Top Camera Utilities */}
         <div className="absolute top-4 inset-x-4 z-20 flex items-center justify-between pointer-events-auto">
           <button
-            onClick={() => setIsFlashActive(!isFlashActive)}
-            className={`w-9 h-9 rounded-full flex items-center justify-center backdrop-blur-md transition-all cursor-pointer ${
+            type="button"
+            onClick={toggleFlash}
+            disabled={!flashSupported || flashBusy || !stream}
+            className={`w-11 h-11 rounded-full flex items-center justify-center backdrop-blur-md transition-all ${
               isFlashActive
                 ? 'bg-amber-100/90 text-amber-800'
                 : 'bg-black/35 text-white/90 hover:bg-black/50'
-            }`}
-            title="Flash"
+            } ${!flashSupported || flashBusy ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer active:scale-95'}`}
+            title={flashSupported ? (isFlashActive ? 'Matikan flash' : 'Nyalakan flash') : 'Flash tidak tersedia pada kamera ini'}
+            aria-label={flashSupported ? (isFlashActive ? 'Matikan flash' : 'Nyalakan flash') : 'Flash tidak tersedia'}
           >
             <Zap className="w-4 h-4" />
           </button>
 
+          <div className="flex items-center gap-1 rounded-full bg-black/35 p-1 backdrop-blur-md">
+            <button
+              type="button"
+              onClick={() => changeZoom(-1)}
+              disabled={!zoomRange || zoomValue <= zoomRange.min}
+              className="w-9 h-9 rounded-full text-white flex items-center justify-center disabled:opacity-40 disabled:cursor-not-allowed active:scale-95"
+              title={zoomRange ? 'Perkecil zoom kamera' : 'Kontrol zoom tidak didukung kamera ini'}
+              aria-label="Perkecil zoom kamera"
+            >
+              <Minus className="w-4 h-4" />
+            </button>
+            <span className="min-w-10 text-center text-[10px] font-semibold text-white" aria-live="polite">
+              {zoomValue === null ? '—' : `${zoomValue.toFixed(1)}×`}
+            </span>
+            <button
+              type="button"
+              onClick={() => changeZoom(1)}
+              disabled={!zoomRange || zoomValue >= zoomRange.max}
+              className="w-9 h-9 rounded-full text-white flex items-center justify-center disabled:opacity-40 disabled:cursor-not-allowed active:scale-95"
+              title={zoomRange ? 'Perbesar zoom kamera' : 'Kontrol zoom tidak didukung kamera ini'}
+              aria-label="Perbesar zoom kamera"
+            >
+              <Plus className="w-4 h-4" />
+            </button>
+          </div>
+
           <button
+            type="button"
             onClick={toggleCamera}
             disabled={isCountingDown || isRecordingBoomerang || isProcessingBoomerang}
-            className="w-9 h-9 rounded-full bg-black/35 hover:bg-black/50 text-white/90 flex items-center justify-center backdrop-blur-md transition-all active:scale-95 cursor-pointer disabled:opacity-50"
+            className="w-11 h-11 rounded-full bg-black/35 hover:bg-black/50 text-white/90 flex items-center justify-center backdrop-blur-md transition-all active:scale-95 cursor-pointer disabled:opacity-50"
             title="Balik Kamera Depan / Belakang"
+            aria-label="Balik kamera depan atau belakang"
           >
             <RefreshCw className="w-4 h-4" />
           </button>
         </div>
+
+        {flashMessage && (
+          <div role="status" className="absolute top-[4.5rem] left-1/2 -translate-x-1/2 z-20 max-w-[85%] rounded-lg bg-black/65 px-3 py-2 text-center text-[10px] leading-relaxed text-white">
+            {flashMessage}
+          </div>
+        )}
       </div>
 
       {/* Preset Photo Filter Strip Bar (Available before capture) */}
