@@ -1,0 +1,6 @@
+{
+  "name": "XLVI Virtual Photobooth",
+  "description": "Virtual photobooth eksklusif dan interaktif untuk pernikahan Nela & Fadli. Abadikan momen spesial dan sampaikan ucapan hangat Anda.",
+  "requestFramePermissions": ["camera", "microphone"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

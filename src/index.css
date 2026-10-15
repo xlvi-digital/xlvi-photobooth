@@ -1,0 +1,122 @@
+@import "tailwindcss";
+
+@theme {
+  --font-serif: "Cormorant Garamond", Georgia, serif;
+  --font-sans: "Plus Jakarta Sans", system-ui, -apple-system, sans-serif;
+  --color-wedding-cream: #faf7f2;
+  --color-wedding-beige: #f4ede4;
+  --color-wedding-brown: #5d4334;
+  --color-wedding-dark: #35261e;
+  --color-wedding-taupe: #8c7365;
+  --color-wedding-border: #e8ded2;
+}
+
+/* ==========================================================================
+   CSS VARIABLES FOR THEMES:
+   Theme 1: Ruby Red (ruby)
+   Theme 2: Royal Blue (blue - DEFAULT)
+   Theme 3: Emerald Green (green)
+   ========================================================================== */
+
+:root,
+[data-theme="blue"] {
+  --primary: #2563EB;
+  --primary-hover: #1D4ED8;
+  --primary-light: #DBEAFE;
+  --primary-soft: #EFF6FF;
+  --primary-dark: #1E3A8A;
+
+  --background: #EFF6FF;
+  --background-secondary: #DBEAFE;
+  --surface: #FFFFFF;
+  --surface-soft: #EFF6FF;
+
+  --text-primary: #172033;
+  --text-secondary: #64748B;
+  --border-color: #BFDBFE;
+  --divider-color: #DBEAFE;
+  --bg-gradient: linear-gradient(135deg, #EFF6FF 0%, #E0EDFF 50%, #F8FBFF 100%);
+  --outer-bg: #131b2b;
+}
+
+[data-theme="ruby"] {
+  --primary: #B4232C;
+  --primary-hover: #941B24;
+  --primary-light: #FDECEC;
+  --primary-soft: #FFF5F5;
+  --primary-dark: #7F1D1D;
+
+  --background: #FFF5F5;
+  --background-secondary: #FFE8EA;
+  --surface: #FFFFFF;
+  --surface-soft: #FFF5F5;
+
+  --text-primary: #2B1B1D;
+  --text-secondary: #7A6265;
+  --border-color: #FCD5D8;
+  --divider-color: #FDECEC;
+  --bg-gradient: linear-gradient(135deg, #FFF5F5 0%, #FFE8EA 50%, #FFF8F8 100%);
+  --outer-bg: #291a1c;
+}
+
+[data-theme="green"] {
+  --primary: #16805B;
+  --primary-hover: #126A4B;
+  --primary-light: #D1FAE5;
+  --primary-soft: #ECFDF5;
+  --primary-dark: #065F46;
+
+  --background: #ECFDF5;
+  --background-secondary: #D1FAE5;
+  --surface: #FFFFFF;
+  --surface-soft: #ECFDF5;
+
+  --text-primary: #17211D;
+  --text-secondary: #64746C;
+  --border-color: #A7F3D0;
+  --divider-color: #D1FAE5;
+  --bg-gradient: linear-gradient(135deg, #ECFDF5 0%, #DDF8EC 50%, #F8FFFB 100%);
+  --outer-bg: #14241d;
+}
+
+@layer base {
+  body {
+    font-family: var(--font-sans);
+    -webkit-tap-highlight-color: transparent;
+    touch-action: manipulation;
+  }
+  
+  h1, h2, h3, .font-serif {
+    font-family: var(--font-serif);
+  }
+}
+
+/* Smooth Theme Transitions */
+.theme-transition {
+  transition: background-color 200ms ease, color 200ms ease, border-color 200ms ease, fill 200ms ease, stroke 200ms ease, box-shadow 200ms ease;
+}
+
+/* Custom subtle scrollbar */
+::-webkit-scrollbar {
+  width: 4px;
+  height: 4px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: rgba(100, 116, 139, 0.2);
+  border-radius: 9999px;
+}
+
+/* Pulsing audio wave animation */
+@keyframes wave-bar {
+  0%, 100% { height: 6px; }
+  50% { height: 26px; }
+}
+
+.animate-wave-1 { animation: wave-bar 1.1s ease-in-out infinite 0.1s; }
+.animate-wave-2 { animation: wave-bar 1.3s ease-in-out infinite 0.25s; }
+.animate-wave-3 { animation: wave-bar 0.9s ease-in-out infinite 0.4s; }
+.animate-wave-4 { animation: wave-bar 1.2s ease-in-out infinite 0.15s; }
+.animate-wave-5 { animation: wave-bar 1.0s ease-in-out infinite 0.35s; }
