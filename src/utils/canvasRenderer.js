@@ -221,6 +221,32 @@ export async function renderPhotoboothComposite(imageSrc, selectedFrame, isMirro
   return { dataUrl, blob };
 }
 
+export function getMultiPhotoSlots(selectedFrame) {
+  const slots = selectedFrame?.frame_slots || selectedFrame?.slots;
+  if (slots?.length) return slots;
+
+  const frameId = typeof selectedFrame === 'object' ? selectedFrame?.id : selectedFrame;
+  if (frameId === 'frame-06') {
+    return [
+      { x: 108, y: 64, width: 864, height: 366 },
+      { x: 108, y: 450, width: 864, height: 366 },
+      { x: 108, y: 836, width: 864, height: 366 },
+    ];
+  }
+  if (frameId === 'frame-07') {
+    return [
+      { x: 72, y: 64, width: 456, height: 1148 },
+      { x: 552, y: 64, width: 456, height: 564 },
+      { x: 552, y: 648, width: 456, height: 564 },
+    ];
+  }
+  return [
+    { x: 72, y: 64, width: 936, height: 560 },
+    { x: 72, y: 644, width: 456, height: 576 },
+    { x: 552, y: 644, width: 456, height: 576 },
+  ];
+}
+
 /**
  * Composites Multi-Photo Collage (up to 3 photos) into defined slot layout.
  * Each slot gets cover clipping and refined border, plus wedding typography.
@@ -267,31 +293,7 @@ export async function renderMultiPhotoComposite(photos, selectedFrame, isMirrore
   ctx.strokeRect(40, 40, width - 80, height - 80);
 
   // Slot definitions based on frame layout
-  let slots = selectedFrame?.frame_slots || selectedFrame?.slots;
-  if (!slots || slots.length === 0) {
-    if (frameId === 'frame-06') {
-      // 3 horizontal stacked photo strip slots
-      slots = [
-        { x: 108, y: 64, width: 864, height: 366 },
-        { x: 108, y: 450, width: 864, height: 366 },
-        { x: 108, y: 836, width: 864, height: 366 }
-      ];
-    } else if (frameId === 'frame-07') {
-      // 1 Tall Left + 2 Stacked Right
-      slots = [
-        { x: 72, y: 64, width: 456, height: 1148 },
-        { x: 552, y: 64, width: 456, height: 564 },
-        { x: 552, y: 648, width: 456, height: 564 }
-      ];
-    } else {
-      // Default frame-04: 1 Top + 2 Bottom
-      slots = [
-        { x: 72, y: 64, width: 936, height: 560 },
-        { x: 72, y: 644, width: 456, height: 576 },
-        { x: 552, y: 644, width: 456, height: 576 }
-      ];
-    }
-  }
+  const slots = getMultiPhotoSlots(selectedFrame);
 
   // Draw each photo into its designated slot with object-fit: cover
   loadedPhotos.forEach((photo, idx) => {
@@ -596,6 +598,63 @@ export function downloadFile(urlOrBlob, filename = 'photobooth-nela-fadli.jpg') 
   if (isBlob) {
     setTimeout(() => URL.revokeObjectURL(objectUrl), 2000);
   }
+}
+
+export async function downloadMediaFile(urlOrBlob, filename) {
+  if (!urlOrBlob) throw new Error('File foto tidak tersedia untuk diunduh.');
+
+  const link = document.createElement('a');
+  const supportsDownload = 'download' in link;
+  const isAppleMobile = /iPhone|iPad|iPod/i.test(navigator.userAgent)
+    || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+  const canOpenMediaDirectly = typeof urlOrBlob === 'string'
+    && /^(https?:\/\/|blob:|data:)/i.test(urlOrBlob);
+  if ((!supportsDownload || isAppleMobile) && canOpenMediaDirectly) {
+    const opened = window.open(urlOrBlob, '_blank');
+    if (!opened) throw new Error('Browser memblokir tab gambar. Izinkan pop-up lalu coba lagi.');
+    opened.opener = null;
+    return { method: 'opened' };
+  }
+
+  let blob;
+  if (urlOrBlob instanceof Blob) {
+    blob = urlOrBlob;
+  } else if (typeof urlOrBlob === 'string') {
+    const response = await fetch(urlOrBlob);
+    if (!response.ok) {
+      throw new Error(`Gagal mengambil foto dari galeri (HTTP ${response.status}).`);
+    }
+    const contentType = response.headers.get('content-type') || '';
+    if (contentType.toLowerCase().includes('text/html')) {
+      throw new Error('Sumber unduhan mengembalikan halaman web, bukan file foto.');
+    }
+    blob = await response.blob();
+  } else {
+    throw new Error('Format sumber foto tidak didukung untuk diunduh.');
+  }
+
+  if (!blob.size) throw new Error('File foto kosong dan tidak dapat diunduh.');
+
+  const objectUrl = URL.createObjectURL(blob);
+  if (!supportsDownload || isAppleMobile) {
+    const opened = window.open(objectUrl, '_blank');
+    if (!opened) {
+      URL.revokeObjectURL(objectUrl);
+      throw new Error('Browser memblokir tab gambar. Izinkan pop-up lalu coba lagi.');
+    }
+    opened.opener = null;
+    window.setTimeout(() => URL.revokeObjectURL(objectUrl), 60_000);
+    return { method: 'opened' };
+  }
+
+  link.href = objectUrl;
+  link.download = filename;
+  link.style.display = 'none';
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  window.setTimeout(() => URL.revokeObjectURL(objectUrl), 2_000);
+  return { method: 'downloaded' };
 }
 
 export function downloadImage(dataUrl, filename) {

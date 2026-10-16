@@ -1,6 +1,6 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { Camera, Volume2, Play, Pause, Heart, Download, X, Sparkles, Filter, AlertCircle, ArrowLeft, Infinity as InfinityIcon, Image as ImageIcon } from 'lucide-react';
-import { downloadFile } from '../utils/canvasRenderer.js';
+import { downloadMediaFile } from '../utils/canvasRenderer.js';
 
 export default function ScreenGallery({
   galleryItems,
@@ -22,8 +22,12 @@ export default function ScreenGallery({
   const [activeAudioCurrentTime, setActiveAudioCurrentTime] = useState(0);
   const [activeAudioDuration, setActiveAudioDuration] = useState(0);
   const [audioErrorId, setAudioErrorId] = useState(null);
+  const [isSavingMedia, setIsSavingMedia] = useState(false);
+  const [saveFeedback, setSaveFeedback] = useState('');
+  const [saveError, setSaveError] = useState('');
 
   const audioPlayerRef = useRef(null);
+  const saveInProgressRef = useRef(false);
 
   // Stop any audio on unmount
   useEffect(() => {
@@ -73,6 +77,60 @@ export default function ScreenGallery({
     const m = Math.floor(secs / 60);
     const s = Math.floor(secs % 60);
     return `${m < 10 ? '0' : ''}${m}:${s < 10 ? '0' : ''}${s}`;
+  };
+
+  const getSelectedMediaUrl = (item) => {
+    if (item?.type === 'multi-photo' || item?.type === 'boomerang') {
+      return item?.mediaBlob || item?.mediaUrl || item?.thumbnailUrl || item?.guestPhoto;
+    }
+    return item?.mediaBlob || item?.thumbnailUrl || item?.mediaUrl || item?.guestPhoto;
+  };
+
+  const createDownloadFilename = (item) => {
+    const now = new Date();
+    const date = [
+      now.getFullYear(),
+      String(now.getMonth() + 1).padStart(2, '0'),
+      String(now.getDate()).padStart(2, '0'),
+    ].join('');
+    const time = [
+      String(now.getHours()).padStart(2, '0'),
+      String(now.getMinutes()).padStart(2, '0'),
+      String(now.getSeconds()).padStart(2, '0'),
+    ].join('');
+    const isWebm = item?.type === 'boomerang'
+      && /\.webm(?:$|[?#])/i.test(item.mediaUrl || '');
+    const extension = item?.type === 'boomerang' ? (isWebm ? 'webm' : 'mp4') : 'jpg';
+    return `XLVI-Photobooth-${date}-${time}.${extension}`;
+  };
+
+  const handleSaveMedia = async () => {
+    if (saveInProgressRef.current || !selectedPhoto) return;
+    saveInProgressRef.current = true;
+    setIsSavingMedia(true);
+    setSaveFeedback('');
+    setSaveError('');
+
+    try {
+      const result = await downloadMediaFile(
+        getSelectedMediaUrl(selectedPhoto),
+        createDownloadFilename(selectedPhoto),
+      );
+      setSaveFeedback(
+        result.method === 'opened'
+          ? 'Media terbuka di tab baru. Gunakan menu Bagikan atau tekan lama untuk menyimpannya.'
+          : 'Unduhan foto dimulai.',
+      );
+    } catch (error) {
+      console.error('[GALLERY DOWNLOAD FAILED]', {
+        submissionId: selectedPhoto.id,
+        message: error?.message,
+      });
+      setSaveError(error?.message || 'Foto gagal disimpan. Silakan coba lagi.');
+    } finally {
+      saveInProgressRef.current = false;
+      setIsSavingMedia(false);
+    }
   };
 
   // Toggle voice playback for a card (Enforces STRICT SINGLE ACTIVE AUDIO RULE)
@@ -300,7 +358,11 @@ export default function ScreenGallery({
               return (
                 <div
                   key={item.id}
-                  onClick={() => setSelectedPhoto(item)}
+                  onClick={() => {
+                    setSaveFeedback('');
+                    setSaveError('');
+                    setSelectedPhoto(item);
+                  }}
                   className="group relative bg-[var(--surface)] rounded-2xl overflow-hidden shadow-xs hover:shadow-md transition-all duration-300 border border-[var(--border-color)] cursor-pointer flex flex-col theme-transition"
                 >
                   {/* Photo or Boomerang Media Preview (Untinted, original natural color) */}
@@ -529,13 +591,42 @@ export default function ScreenGallery({
                   </div>
                 )}
 
-                <button
-                  onClick={() => downloadFile(selectedPhoto.mediaBlob || selectedPhoto.mediaUrl || selectedPhoto.guestPhoto, `xlvi-${selectedPhoto.type || 'photobooth'}-${selectedPhoto.guestName}.jpg`)}
-                  className="w-full py-2.5 px-4 rounded-xl bg-white hover:bg-[var(--surface-soft)] border border-[var(--border-color)] text-[var(--primary)] text-xs font-semibold uppercase tracking-wider flex items-center justify-center gap-2 cursor-pointer shadow-xs transition-colors"
-                >
-                  <Download className="w-4 h-4" />
-                  <span>Simpan Media Ini</span>
-                </button>
+                <div className="space-y-2">
+                  <button
+                    type="button"
+                    onClick={handleSaveMedia}
+                    disabled={isSavingMedia}
+                    className="w-full py-2.5 px-4 rounded-xl bg-white hover:bg-[var(--surface-soft)] border border-[var(--border-color)] text-[var(--primary)] text-xs font-semibold uppercase tracking-wider flex items-center justify-center gap-2 cursor-pointer shadow-xs transition-colors disabled:opacity-60 disabled:cursor-wait"
+                  >
+                    {isSavingMedia ? (
+                      <span className="w-4 h-4 rounded-full border-2 border-[var(--primary)] border-t-transparent animate-spin" />
+                    ) : (
+                      <Download className="w-4 h-4" />
+                    )}
+                    <span>{isSavingMedia ? 'Menyiapkan...' : 'Simpan Media Ini'}</span>
+                  </button>
+                  {saveFeedback && (
+                    <p role="status" className="text-center text-[10px] text-emerald-700">
+                      {saveFeedback}
+                    </p>
+                  )}
+                  {saveError && (
+                    <div role="alert" className="text-center space-y-1">
+                      <p className="text-[10px] text-rose-700">{saveError}</p>
+                      {typeof getSelectedMediaUrl(selectedPhoto) === 'string'
+                        && !saveError.includes('bukan file foto') && (
+                        <a
+                          href={getSelectedMediaUrl(selectedPhoto)}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="inline-block text-[10px] font-semibold text-[var(--primary)] underline"
+                        >
+                          Buka media untuk disimpan manual
+                        </a>
+                      )}
+                    </div>
+                  )}
+                </div>
               </div>
             </div>
           </div>

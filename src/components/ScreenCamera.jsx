@@ -3,7 +3,7 @@ import { Camera, RefreshCw, Zap, Upload, Sparkles, Repeat, Infinity as InfinityI
 import FrameOverlay from './FrameOverlay.jsx';
 import FilterSelector from './FilterSelector.jsx';
 import { playCameraShutterSound, playCountdownBeep } from '../utils/audioSynthesis.js';
-import { generateBoomerangVideo, renderMultiPhotoComposite } from '../utils/canvasRenderer.js';
+import { generateBoomerangVideo, getMultiPhotoSlots, renderMultiPhotoComposite } from '../utils/canvasRenderer.js';
 import { getFilterById } from '../utils/photoFilters.js';
 import { FRAMES } from '../data/eventData.js';
 import guestCoupleImg from '../assets/images/guest_photo_couple_1791014034635.jpg';
@@ -22,7 +22,10 @@ export default function ScreenCamera({
   // Resolve active frame object securely
   const activeFrame = selectedFrame || (selectedFrameId ? FRAMES.find((f) => f.id === (typeof selectedFrameId === 'object' ? selectedFrameId?.id : selectedFrameId)) : null) || FRAMES[0];
   const isMulti = activeFrame?.type === 'multi';
-  const targetPhotoCount = activeFrame?.photoCount || 1;
+  const multiPhotoSlots = isMulti ? getMultiPhotoSlots(activeFrame) : [];
+  const targetPhotoCount = isMulti
+    ? Math.min(activeFrame?.photoCount || multiPhotoSlots.length || 1, multiPhotoSlots.length || 1)
+    : 1;
 
   // Single-frame mode supports photo or boomerang. Multi-photo is photo mode.
   const [captureMode, setCaptureMode] = useState('photo'); // 'photo' | 'boomerang'
@@ -44,9 +47,11 @@ export default function ScreenCamera({
   const activeFilterPreset = getFilterById(selectedFilter);
 
   // Multi-photo state
-  const [capturedPhotos, setCapturedPhotos] = useState(initialCapturedPhotos);
+  const [capturedPhotos, setCapturedPhotos] = useState(() => [...initialCapturedPhotos]);
   const [currentSlotIndex, setCurrentSlotIndex] = useState(
-    targetSlotToRetake !== null ? targetSlotToRetake : (initialCapturedPhotos.length < targetPhotoCount ? initialCapturedPhotos.length : 0)
+    targetSlotToRetake !== null
+      ? targetSlotToRetake
+      : Math.max(0, initialCapturedPhotos.findIndex((photo, index) => index < targetPhotoCount && !photo))
   );
   const [isCompositingMulti, setIsCompositingMulti] = useState(false);
 
@@ -301,10 +306,27 @@ export default function ScreenCamera({
     let dataUrl;
 
     if (video && video.videoWidth > 0 && !cameraError) {
+      let sourceX = 0;
+      let sourceY = 0;
+      let sourceWidth = video.videoWidth;
+      let sourceHeight = video.videoHeight;
+      if (isMulti) {
+        const slot = multiPhotoSlots[currentSlotIndex];
+        if (slot?.width > 0 && slot?.height > 0) {
+          const slotAspect = slot.width / slot.height;
+          if (sourceWidth / sourceHeight > slotAspect) {
+            sourceWidth = sourceHeight * slotAspect;
+            sourceX = (video.videoWidth - sourceWidth) / 2;
+          } else {
+            sourceHeight = sourceWidth / slotAspect;
+            sourceY = (video.videoHeight - sourceHeight) / 2;
+          }
+        }
+      }
       const canvas = document.createElement('canvas');
-      const captureScale = Math.min(1, 1920 / Math.max(video.videoWidth, video.videoHeight));
-      canvas.width = Math.round(video.videoWidth * captureScale);
-      canvas.height = Math.round(video.videoHeight * captureScale);
+      const captureScale = Math.min(1, 1920 / Math.max(sourceWidth, sourceHeight));
+      canvas.width = Math.round(sourceWidth * captureScale);
+      canvas.height = Math.round(sourceHeight * captureScale);
       const ctx = canvas.getContext('2d');
 
       // Mirror user front camera
@@ -322,7 +344,17 @@ export default function ScreenCamera({
         }
       }
 
-      ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+      ctx.drawImage(
+        video,
+        sourceX,
+        sourceY,
+        sourceWidth,
+        sourceHeight,
+        0,
+        0,
+        canvas.width,
+        canvas.height,
+      );
       dataUrl = canvas.toDataURL('image/jpeg', 0.94);
     } else {
       // Fallback sample photos
@@ -338,8 +370,11 @@ export default function ScreenCamera({
       updatedPhotos[currentSlotIndex] = dataUrl;
       setCapturedPhotos(updatedPhotos);
 
-      const filledCount = updatedPhotos.filter(Boolean).length;
-      if (filledCount >= targetPhotoCount) {
+      const isComplete = Array.from(
+        { length: targetPhotoCount },
+        (_, index) => !!updatedPhotos[index],
+      ).every(Boolean);
+      if (isComplete) {
         setIsCompositingMulti(true);
         try {
           const compResult = await renderMultiPhotoComposite(updatedPhotos, activeFrame, false, currentEvent, selectedFilter);
@@ -374,12 +409,7 @@ export default function ScreenCamera({
           });
         }
       } else {
-        // Move to the next unfilled slot
-        let nextIndex = (currentSlotIndex + 1) % targetPhotoCount;
-        while (updatedPhotos[nextIndex] && nextIndex !== currentSlotIndex) {
-          nextIndex = (nextIndex + 1) % targetPhotoCount;
-        }
-        setCurrentSlotIndex(nextIndex);
+        setCurrentSlotIndex(updatedPhotos.slice(0, targetPhotoCount).findIndex((photo) => !photo));
       }
     } else {
       // SINGLE PHOTO HANDLING
@@ -530,8 +560,11 @@ export default function ScreenCamera({
         updated[currentSlotIndex] = uploadedData;
         setCapturedPhotos(updated);
 
-        const filledCount = updated.filter(Boolean).length;
-        if (filledCount >= targetPhotoCount) {
+        const isComplete = Array.from(
+          { length: targetPhotoCount },
+          (_, index) => !!updated[index],
+        ).every(Boolean);
+        if (isComplete) {
           setIsCompositingMulti(true);
           const compResult = await renderMultiPhotoComposite(updated, activeFrame, false, currentEvent, selectedFilter);
           stopCurrentStream();
@@ -549,11 +582,7 @@ export default function ScreenCamera({
             selectedFilter: selectedFilter
           });
         } else {
-          let nextIndex = (currentSlotIndex + 1) % targetPhotoCount;
-          while (updated[nextIndex] && nextIndex !== currentSlotIndex) {
-            nextIndex = (nextIndex + 1) % targetPhotoCount;
-          }
-          setCurrentSlotIndex(nextIndex);
+          setCurrentSlotIndex(updated.slice(0, targetPhotoCount).findIndex((photo) => !photo));
         }
       } else {
         stopCurrentStream();
@@ -589,7 +618,7 @@ export default function ScreenCamera({
         {/* Multi-Photo Step Progress Dots */}
         {isMulti ? (
           <div className="flex items-center justify-center gap-2 mt-1 mb-1">
-            {[0, 1, 2].map((slotIdx) => {
+            {Array.from({ length: targetPhotoCount }, (_, slotIdx) => {
               const isFilled = !!capturedPhotos[slotIdx];
               const isCurrent = currentSlotIndex === slotIdx;
               return (
@@ -597,15 +626,16 @@ export default function ScreenCamera({
                   key={slotIdx}
                   type="button"
                   onClick={() => setCurrentSlotIndex(slotIdx)}
+                  disabled={!isFilled || isCountingDown || isRecordingBoomerang || isProcessingBoomerang}
                   className={`flex items-center gap-1 py-0.5 px-2 rounded-full text-[10px] font-sans transition-all cursor-pointer ${
                     isCurrent
                       ? 'bg-[#5c4033] text-white font-semibold ring-1 ring-[#5c4033]/30'
                       : isFilled
                       ? 'bg-[#e2d5c7] text-[#5c4033]'
                       : 'bg-[#ede4d8] text-[#8c7365]'
-                  }`}
+                  } disabled:cursor-not-allowed`}
                 >
-                  <span>{isFilled ? '✓' : `●`}</span>
+                  <span>{isFilled ? '✓ Retake' : isCurrent ? '● Aktif' : '●'}</span>
                   <span>Foto 0{slotIdx + 1}</span>
                 </button>
               );
@@ -655,18 +685,20 @@ export default function ScreenCamera({
       {/* Portrait viewport; the complete camera image stays visible inside it. */}
       <div className="relative w-full aspect-[3/4] bg-[#faf7f2] rounded-3xl overflow-hidden shadow-lg border border-[#e8ded2] flex items-center justify-center">
         {/* Live Video Feed with Filter Effect applied ONLY to the video feed */}
-        <video
-          ref={videoRef}
-          autoPlay
-          playsInline
-          muted
-          style={{
-            filter: activeFilterPreset?.cssFilter || 'none',
-          }}
-          className={`w-full h-full object-contain transition-all duration-200 ${
-            facingMode === 'user' ? '-scale-x-100' : ''
-          } ${cameraError ? 'hidden' : 'block'}`}
-        />
+        {!isMulti && (
+          <video
+            ref={videoRef}
+            autoPlay
+            playsInline
+            muted
+            style={{
+              filter: activeFilterPreset?.cssFilter || 'none',
+            }}
+            className={`w-full h-full object-contain transition-all duration-200 ${
+              facingMode === 'user' ? '-scale-x-100' : ''
+            } ${cameraError ? 'hidden' : 'block'}`}
+          />
+        )}
 
         {/* Fallback Screen if Camera Access is Denied */}
         {cameraError && (
@@ -711,15 +743,40 @@ export default function ScreenCamera({
           currentSlotIndex={isMulti ? currentSlotIndex : null}
           showText={true}
           currentEvent={currentEvent}
+          capturedPhotos={capturedPhotos}
+          cameraPreview={isMulti ? (
+            <div className="relative w-full h-full overflow-hidden">
+              <video
+                ref={videoRef}
+                autoPlay
+                playsInline
+                muted
+                style={{ filter: activeFilterPreset?.cssFilter || 'none' }}
+                className={`w-full h-full object-cover ${
+                  facingMode === 'user' ? '-scale-x-100' : ''
+                } ${cameraError ? 'hidden' : 'block'}`}
+              />
+              {isCountingDown && (
+                <div className="absolute inset-0 z-40 bg-black/40 backdrop-blur-xs flex items-center justify-center">
+                  <span className="text-4xl sm:text-6xl font-serif text-white font-bold animate-ping duration-700">
+                    {countdownValue}
+                  </span>
+                </div>
+              )}
+              {flashAnimation && (
+                <div className="absolute inset-0 z-50 bg-white animate-out fade-out duration-250 pointer-events-none" />
+              )}
+            </div>
+          ) : null}
         />
 
         {/* Shutter Flash Animation */}
-        {flashAnimation && (
+        {!isMulti && flashAnimation && (
           <div className="absolute inset-0 bg-white z-50 animate-out fade-out duration-250 pointer-events-none" />
         )}
 
         {/* Countdown Number Overlay */}
-        {isCountingDown && (
+        {!isMulti && isCountingDown && (
           <div className="absolute inset-0 z-40 bg-black/40 backdrop-blur-xs flex items-center justify-center">
             <span className="text-8xl sm:text-9xl font-serif text-white font-bold animate-ping duration-700">
               {countdownValue}
@@ -831,13 +888,15 @@ export default function ScreenCamera({
       {/* Multi-Photo mini preview strip at bottom */}
       {isMulti && capturedPhotos.some(Boolean) && (
         <div className="mb-1 flex items-center justify-center gap-2 max-w-xs mx-auto">
-          {[0, 1, 2].map((idx) => {
+          {Array.from({ length: targetPhotoCount }, (_, idx) => {
             const photoSrc = capturedPhotos[idx];
             return (
-              <div
+              <button
                 key={idx}
+                type="button"
                 onClick={() => setCurrentSlotIndex(idx)}
-                className={`relative w-12 h-12 rounded-xl overflow-hidden border-2 cursor-pointer transition-all ${
+                disabled={!photoSrc || isCountingDown || isRecordingBoomerang || isProcessingBoomerang}
+                className={`relative w-12 h-12 rounded-xl overflow-hidden border-2 cursor-pointer transition-all disabled:cursor-not-allowed ${
                   currentSlotIndex === idx
                     ? 'border-[#5c4033] shadow-md scale-105'
                     : photoSrc
@@ -858,7 +917,7 @@ export default function ScreenCamera({
                     <RotateCcw className="w-3.5 h-3.5 text-white" />
                   </div>
                 )}
-              </div>
+              </button>
             );
           })}
         </div>

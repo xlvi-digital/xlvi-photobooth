@@ -1,16 +1,22 @@
 import React from 'react';
 import { formatIndonesianDate } from './ScreenLanding.jsx';
+import { getMultiPhotoSlots } from '../utils/canvasRenderer.js';
 
 export default function FrameOverlay({
   frameId = 'frame-01',
   selectedFrame,
   showText = true,
   currentSlotIndex = null,
-  currentEvent = null
+  currentEvent = null,
+  capturedPhotos = [],
+  cameraPreview = null,
 }) {
   const activeId = selectedFrame?.id || frameId;
   const overlayUrl = selectedFrame?.overlay_url;
-  const dynamicSlots = selectedFrame?.slots || selectedFrame?.frame_slots;
+  const configuredSlots = selectedFrame?.slots || selectedFrame?.frame_slots;
+  const dynamicSlots = selectedFrame?.type === 'multi'
+    ? getMultiPhotoSlots(selectedFrame)
+    : configuredSlots;
   const isMulti = selectedFrame?.type === 'multi' || (dynamicSlots && dynamicSlots.length > 1);
 
   // Derive dynamic event name and event_date strictly from currentEvent
@@ -29,7 +35,7 @@ export default function FrameOverlay({
   // If frame has dynamic multi-photo slots, render dynamic slot overlays!
   if (isMulti && dynamicSlots && dynamicSlots.length > 0) {
     return (
-      <div className="absolute inset-0 pointer-events-none p-2 sm:p-3 flex flex-col justify-between">
+      <div className="absolute inset-0 pointer-events-none flex flex-col justify-between">
         {/* Outer frame borders */}
         <div className="absolute inset-1 sm:inset-2 border-2 border-[#5c4033] rounded-lg" />
         <div className="absolute inset-2 sm:inset-2.5 border border-[#c8a882]/80 rounded-md" />
@@ -42,6 +48,7 @@ export default function FrameOverlay({
             const widthPct = ((slot.width || 1080) / 1080) * 100;
             const heightPct = ((slot.height || 1440) / 1440) * 100;
             const isCurrent = currentSlotIndex === idx;
+            const capturedPhoto = capturedPhotos[idx];
 
             return (
               <div
@@ -53,18 +60,31 @@ export default function FrameOverlay({
                   height: `${heightPct}%`,
                   borderRadius: `${(slot.border_radius || 12) / 3}px`,
                 }}
-                className={`absolute transition-all flex items-center justify-center ${
+                className={`absolute overflow-hidden transition-all ${
                   isCurrent
-                    ? 'border-2 border-amber-300 bg-amber-400/20 shadow-md ring-2 ring-[#5c4033]/40'
-                    : 'border border-dashed border-[#c8a882]/80 bg-black/10'
+                    ? 'border-[3px] border-amber-300 shadow-md ring-2 ring-[#5c4033]/50'
+                    : capturedPhoto
+                    ? 'border-2 border-[#c8a882]'
+                    : 'border border-dashed border-[#c8a882]/80 bg-[#e9dfd4]'
                 }`}
               >
-                <span
-                  className={`text-[9px] font-serif uppercase tracking-widest px-1.5 py-0.5 rounded-full ${
-                    isCurrent ? 'bg-[#5c4033] text-white font-bold' : 'text-[#faf7f2] bg-black/40'
-                  }`}
-                >
-                  {isCurrent ? `● Slot Aktif (Foto 0${idx + 1})` : `Slot 0${idx + 1}`}
+                {isCurrent ? (
+                  cameraPreview
+                ) : capturedPhoto ? (
+                  <img
+                    src={capturedPhoto}
+                    alt={`Hasil foto slot ${idx + 1}`}
+                    className="absolute inset-0 w-full h-full object-cover"
+                  />
+                ) : (
+                  <div className="absolute inset-0 flex items-center justify-center text-[#8c7365]">
+                    <span className="text-[10px] font-serif uppercase tracking-widest">Slot 0{idx + 1}</span>
+                  </div>
+                )}
+                <span className={`absolute top-1 left-1 z-10 text-[8px] font-serif uppercase tracking-widest px-1.5 py-0.5 rounded-full ${
+                  isCurrent ? 'bg-[#5c4033] text-white font-bold' : 'bg-black/45 text-white'
+                }`}>
+                  {isCurrent ? `Aktif · 0${idx + 1}` : capturedPhoto ? `Selesai · 0${idx + 1}` : `Berikutnya · 0${idx + 1}`}
                 </span>
               </div>
             );
