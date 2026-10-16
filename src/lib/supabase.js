@@ -179,6 +179,7 @@ export async function uploadToStorage(
   contentType = 'image/png',
   upsert = true,
   operation = 'storage upload',
+  diagnosticContext = {},
 ) {
   if (!isSupabaseConfigured()) {
     console.warn(`Supabase storage upload simulated (credentials not configured) for: ${bucketName}/${filePath}`);
@@ -213,6 +214,7 @@ export async function uploadToStorage(
       path: cleanPath,
       upsert,
       contentType: detectedType,
+      ...diagnosticContext,
     });
     throw error;
   }
@@ -224,6 +226,7 @@ export async function uploadToStorage(
       path: cleanPath,
       upsert,
       contentType: detectedType,
+      ...diagnosticContext,
     });
     throw error;
   }

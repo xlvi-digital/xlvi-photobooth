@@ -142,6 +142,22 @@ function assertSubmissionStoragePath(path, eventId, submissionId, filenamePatter
   }
 }
 
+function logSubmissionUploadAttempt(operation, bucket, path, eventId, submissionId) {
+  if (!import.meta.env.DEV) return;
+
+  const objectPath = normalizeStoragePath(bucket, path);
+  console.info('[SUBMISSION STORAGE UPLOAD]', {
+    operation,
+    bucket,
+    objectPath,
+    eventUuid: eventId,
+    submissionUuid: submissionId,
+    filename: objectPath.split('/').at(-1),
+    submissionUuidCreatedBeforeUpload: true,
+    submissionRecordCreatedBeforeUpload: false,
+  });
+}
+
 function getLocalSubmissions() {
   try {
     const raw = localStorage.getItem(LOCAL_STORAGE_SUBMISSIONS_KEY);
@@ -458,7 +474,7 @@ export async function fetchAllSubmissionsAdmin({ eventId = null, mediaType = 'al
  * 2. Generate submissionId using crypto.randomUUID()
  * 3. Ensure valid Blobs with image/jpeg for photos
  * 4. Upload relative paths to 'submissions' bucket
- * 5. Insert into 'submissions', 'submission_media', and 'voice_notes'
+ * 5. Commit submissions, submission_media, and voice_notes through one RPC
  * 6. Clean up uploaded storage files if database insert fails
  */
 export async function createSubmission({
@@ -521,6 +537,9 @@ export async function createSubmission({
       const mediaExt = isVideo ? (isWebmVideo ? 'webm' : 'mp4') : 'jpg';
       const mediaMime = isVideo ? (primaryBlob.type || 'video/mp4') : 'image/jpeg';
       const mainRelativePath = `submissions/${eventId}/${submissionId}/${isVideo ? 'boomerang' : 'photo'}.${mediaExt}`;
+      const mainObjectPath = normalizeStoragePath('submissions', mainRelativePath);
+      const mainOperation = isVideo ? 'upload boomerang media' : 'upload primary photo';
+      logSubmissionUploadAttempt(mainOperation, 'submissions', mainRelativePath, eventId, submissionId);
 
       const uploadResult = await uploadToStorage(
         'submissions',
@@ -528,7 +547,14 @@ export async function createSubmission({
         primaryBlob,
         mediaMime,
         false,
-        isVideo ? 'upload boomerang media' : 'upload primary photo',
+        mainOperation,
+        {
+          eventUuid: eventId,
+          submissionUuid: submissionId,
+          filename: mainObjectPath.split('/').at(-1),
+          submissionUuidCreatedBeforeUpload: true,
+          submissionRecordCreatedBeforeUpload: false,
+        },
       );
       uploadedFilesToCleanup.push({ bucket: 'submissions', path: uploadResult.path });
       uploadedMediaPath = normalizeStoragePath('submissions', uploadResult.path);
@@ -540,6 +566,8 @@ export async function createSubmission({
         const thumbBlob = await ensureBlob(thumbnailBlobOrUrl, 'image/jpeg');
         if (thumbBlob && thumbBlob.size > 0) {
           const thumbPath = `submissions/${eventId}/${submissionId}/thumb.jpg`;
+          const thumbObjectPath = normalizeStoragePath('submissions', thumbPath);
+          logSubmissionUploadAttempt('upload thumbnail', 'submissions', thumbPath, eventId, submissionId);
           const thumbResult = await uploadToStorage(
             'submissions',
             thumbPath,
@@ -547,6 +575,13 @@ export async function createSubmission({
             'image/jpeg',
             false,
             'upload thumbnail',
+            {
+              eventUuid: eventId,
+              submissionUuid: submissionId,
+              filename: thumbObjectPath.split('/').at(-1),
+              submissionUuidCreatedBeforeUpload: true,
+              submissionRecordCreatedBeforeUpload: false,
+            },
           );
           uploadedFilesToCleanup.push({ bucket: 'submissions', path: thumbResult.path });
           uploadedThumbPath = normalizeStoragePath('submissions', thumbResult.path);
@@ -570,13 +605,23 @@ export async function createSubmission({
               const rawBlob = await ensureBlob(rawItem, 'image/jpeg');
               if (rawBlob && rawBlob.size > 0) {
                 const rawPath = `submissions/${eventId}/${submissionId}/photo-${i + 1}.jpg`;
+                const rawObjectPath = normalizeStoragePath('submissions', rawPath);
+                const rawOperation = `upload multi-photo ${i + 1}`;
+                logSubmissionUploadAttempt(rawOperation, 'submissions', rawPath, eventId, submissionId);
                 const rawResult = await uploadToStorage(
                   'submissions',
                   rawPath,
                   rawBlob,
                   'image/jpeg',
                   false,
-                  `upload multi-photo ${i + 1}`,
+                  rawOperation,
+                  {
+                    eventUuid: eventId,
+                    submissionUuid: submissionId,
+                    filename: rawObjectPath.split('/').at(-1),
+                    submissionUuidCreatedBeforeUpload: true,
+                    submissionRecordCreatedBeforeUpload: false,
+                  },
                 );
                 uploadedFilesToCleanup.push({ bucket: 'submissions', path: rawResult.path });
                 assertSubmissionStoragePath(
@@ -618,6 +663,8 @@ export async function createSubmission({
           'aac': 'aac',
         }[voiceSubtype] || 'audio';
         const voicePath = `submissions/${eventId}/${submissionId}/voice.${voiceExtension}`;
+        const voiceObjectPath = normalizeStoragePath('submissions', voicePath);
+        logSubmissionUploadAttempt('upload voice note', 'submissions', voicePath, eventId, submissionId);
         const voiceResult = await uploadToStorage(
           'submissions',
           voicePath,
@@ -625,6 +672,13 @@ export async function createSubmission({
           voiceMime,
           false,
           'upload voice note',
+          {
+            eventUuid: eventId,
+            submissionUuid: submissionId,
+            filename: voiceObjectPath.split('/').at(-1),
+            submissionUuidCreatedBeforeUpload: true,
+            submissionRecordCreatedBeforeUpload: false,
+          },
         );
         uploadedFilesToCleanup.push({ bucket: 'submissions', path: voiceResult.path });
         uploadedVoicePath = normalizeStoragePath('submissions', voiceResult.path);
@@ -637,6 +691,18 @@ export async function createSubmission({
       const [minutes = '0', seconds = '0'] = String(voiceDuration || '00:15').split(':');
       const voiceDurationSeconds = (parseInt(minutes, 10) || 0) * 60 + (parseInt(seconds, 10) || 0);
       let commitResult;
+      if (import.meta.env.DEV) {
+        console.info('[SUBMISSION RPC CALL]', {
+          rpc: 'create_public_submission',
+          eventUuid: eventId,
+          submissionUuid: submissionId,
+          bucket: 'submissions',
+          mediaObjectPath: uploadedMediaPath,
+          thumbnailObjectPath: uploadedThumbPath,
+          voiceObjectPath: uploadedVoicePath,
+          submissionRecordCreatedBeforeRpc: false,
+        });
+      }
       try {
         commitResult = await supabase.rpc('create_public_submission', {
           p_submission_id: submissionId,
@@ -661,6 +727,8 @@ export async function createSubmission({
       } catch (error) {
         logSupabaseOperationError('call create_public_submission RPC', error, {
           bucket: 'submissions',
+          eventUuid: eventId,
+          submissionUuid: submissionId,
           mediaPath: uploadedMediaPath,
           thumbnailPath: uploadedThumbPath,
           voicePath: uploadedVoicePath,
@@ -672,6 +740,8 @@ export async function createSubmission({
       if (commitError) {
         logSupabaseOperationError('call create_public_submission RPC', commitError, {
           bucket: 'submissions',
+          eventUuid: eventId,
+          submissionUuid: submissionId,
           mediaPath: uploadedMediaPath,
           thumbnailPath: uploadedThumbPath,
           voicePath: uploadedVoicePath,
@@ -681,6 +751,8 @@ export async function createSubmission({
   } catch (err) {
       logSupabaseOperationError('prepare or save submission', err, {
         bucket: 'submissions',
+        eventUuid: eventId,
+        submissionUuid: submissionId,
         mediaPath: uploadedMediaPath,
         thumbnailPath: uploadedThumbPath,
         voicePath: uploadedVoicePath,
