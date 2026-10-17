@@ -47,11 +47,22 @@ export default function ScreenCamera({
   const activeFilterPreset = getFilterById(selectedFilter);
 
   // Multi-photo state
-  const [capturedPhotos, setCapturedPhotos] = useState(() => [...initialCapturedPhotos]);
+  const [capturedPhotos, setCapturedPhotos] = useState(() => (
+    Array.from(
+      { length: targetPhotoCount },
+      (_, index) => initialCapturedPhotos[index] || null,
+    )
+  ));
   const [currentSlotIndex, setCurrentSlotIndex] = useState(
     targetSlotToRetake !== null
       ? targetSlotToRetake
-      : Math.max(0, initialCapturedPhotos.findIndex((photo, index) => index < targetPhotoCount && !photo))
+      : (() => {
+          const firstEmptySlot = Array.from(
+            { length: targetPhotoCount },
+            (_, index) => index,
+          ).find((index) => !initialCapturedPhotos[index]);
+          return firstEmptySlot ?? targetPhotoCount;
+        })()
   );
   const [isCompositingMulti, setIsCompositingMulti] = useState(false);
 
@@ -65,6 +76,26 @@ export default function ScreenCamera({
   const streamRef = useRef(null);
   const countdownIntervalRef = useRef(null);
   const cameraRequestIdRef = useRef(0);
+  const currentSlotRef = useRef(currentSlotIndex);
+
+  const logCollageCameraState = useCallback((stage, slotIndex = currentSlotRef.current) => {
+    if (!isMulti) return;
+    const activeStream = streamRef.current;
+    console.info('[COLLAGE CAMERA]', {
+      stage,
+      activeSlot: slotIndex,
+      totalSlots: targetPhotoCount,
+      isCameraActive: !!activeStream?.getVideoTracks().some((track) => track.readyState === 'live'),
+      hasStream: !!activeStream,
+      videoReady: !!videoRef.current,
+      videoReadyState: videoRef.current?.readyState ?? null,
+      streamTracks: activeStream?.getTracks().map((track) => ({
+        kind: track.kind,
+        readyState: track.readyState,
+        enabled: track.enabled,
+      })) || [],
+    });
+  }, [isMulti, targetPhotoCount]);
 
   // Stop active media stream tracks safely and thoroughly
   const stopCurrentStream = useCallback(() => {
@@ -206,7 +237,20 @@ export default function ScreenCamera({
         console.log('Video auto-play handled:', playErr);
       });
     }
-  }, [stream]);
+    logCollageCameraState('camera stream attached');
+  }, [stream, logCollageCameraState]);
+
+  useEffect(() => {
+    currentSlotRef.current = currentSlotIndex;
+    logCollageCameraState('active slot changed');
+    if (isMulti) {
+      console.info('[COLLAGE POSITION]', {
+        activeSlot: currentSlotIndex,
+        displaySlot: currentSlotIndex + 1,
+        frame: activeFrame?.name,
+      });
+    }
+  }, [currentSlotIndex, logCollageCameraState]);
 
   // Flip Camera front ↔ rear
   const toggleCamera = () => {
@@ -298,6 +342,23 @@ export default function ScreenCamera({
 
   // Snapshot from video stream onto canvas
   const executePhotoCapture = async () => {
+    const capturedSlotIndex = currentSlotRef.current;
+    if (isMulti && (capturedSlotIndex < 0 || capturedSlotIndex >= targetPhotoCount)) {
+      console.error('[COLLAGE SLOT] Refusing capture outside valid slot range.', {
+        currentSlot: capturedSlotIndex,
+        totalSlots: targetPhotoCount,
+        frame: activeFrame?.name,
+      });
+      return;
+    }
+    const activeSlotBeforeCapture = currentSlotIndex;
+    console.info('[COLLAGE SLOT]', {
+      frame: activeFrame?.name,
+      currentSlot: capturedSlotIndex,
+      activeSlotBeforeCapture,
+      totalSlots: targetPhotoCount,
+    });
+    logCollageCameraState('before capture', capturedSlotIndex);
     setFlashAnimation(true);
     playCameraShutterSound();
     setTimeout(() => setFlashAnimation(false), 260);
@@ -311,7 +372,7 @@ export default function ScreenCamera({
       let sourceWidth = video.videoWidth;
       let sourceHeight = video.videoHeight;
       if (isMulti) {
-        const slot = multiPhotoSlots[currentSlotIndex];
+        const slot = multiPhotoSlots[capturedSlotIndex];
         if (slot?.width > 0 && slot?.height > 0) {
           const slotAspect = slot.width / slot.height;
           if (sourceWidth / sourceHeight > slotAspect) {
@@ -359,26 +420,33 @@ export default function ScreenCamera({
     } else {
       // Fallback sample photos
       const fallbackList = [guestCoupleImg, guestBridesmaidsImg, guestFriendsImg];
-      dataUrl = fallbackList[currentSlotIndex % 3];
+      dataUrl = fallbackList[capturedSlotIndex % 3];
     }
 
     console.log('[CAPTURE] photo captured');
+    logCollageCameraState('after capture', capturedSlotIndex);
 
     // MULTI PHOTO HANDLING (Up to 3 Photos)
     if (isMulti) {
       const updatedPhotos = [...capturedPhotos];
-      updatedPhotos[currentSlotIndex] = dataUrl;
+      updatedPhotos[capturedSlotIndex] = dataUrl;
       setCapturedPhotos(updatedPhotos);
 
       const isComplete = Array.from(
         { length: targetPhotoCount },
         (_, index) => !!updatedPhotos[index],
       ).every(Boolean);
+      console.info('[COLLAGE SLOT AFTER CAPTURE]', {
+        currentSlot: capturedSlotIndex,
+        nextSlot: capturedSlotIndex + 1,
+        collagePhotos: updatedPhotos.slice(0, targetPhotoCount).map(Boolean),
+      });
       if (isComplete) {
+        logCollageCameraState('before stop: all collage slots captured', capturedSlotIndex);
+        stopCurrentStream();
         setIsCompositingMulti(true);
         try {
           const compResult = await renderMultiPhotoComposite(updatedPhotos, activeFrame, false, currentEvent, selectedFilter);
-          stopCurrentStream();
           setIsCompositingMulti(false);
           onMediaCaptured({
             type: 'multi-photo',
@@ -394,7 +462,6 @@ export default function ScreenCamera({
           });
         } catch (err) {
           console.error('Multi photo composite error:', err);
-          stopCurrentStream();
           setIsCompositingMulti(false);
           onMediaCaptured({
             type: 'multi-photo',
@@ -409,7 +476,23 @@ export default function ScreenCamera({
           });
         }
       } else {
-        setCurrentSlotIndex(updatedPhotos.slice(0, targetPhotoCount).findIndex((photo) => !photo));
+        const nextSlotIndex = capturedSlotIndex + 1;
+        if (nextSlotIndex >= targetPhotoCount) {
+          console.error('[COLLAGE SLOT] Expected another slot but the next slot is out of range.', {
+            currentSlot: capturedSlotIndex,
+            nextSlot: nextSlotIndex,
+            totalSlots: targetPhotoCount,
+            collagePhotos: updatedPhotos.slice(0, targetPhotoCount).map(Boolean),
+          });
+          return;
+        }
+        console.info('[COLLAGE SLOT CHANGE]', {
+          from: capturedSlotIndex,
+          to: nextSlotIndex,
+        });
+        currentSlotRef.current = nextSlotIndex;
+        setCurrentSlotIndex(nextSlotIndex);
+        logCollageCameraState('next slot selected; stream retained', nextSlotIndex);
       }
     } else {
       // SINGLE PHOTO HANDLING
@@ -582,7 +665,11 @@ export default function ScreenCamera({
             selectedFilter: selectedFilter
           });
         } else {
-          setCurrentSlotIndex(updated.slice(0, targetPhotoCount).findIndex((photo) => !photo));
+          const nextSlotIndex = currentSlotRef.current + 1;
+          if (nextSlotIndex < targetPhotoCount) {
+            currentSlotRef.current = nextSlotIndex;
+            setCurrentSlotIndex(nextSlotIndex);
+          }
         }
       } else {
         stopCurrentStream();
@@ -625,7 +712,10 @@ export default function ScreenCamera({
                 <button
                   key={slotIdx}
                   type="button"
-                  onClick={() => setCurrentSlotIndex(slotIdx)}
+                  onClick={() => {
+                    currentSlotRef.current = slotIdx;
+                    setCurrentSlotIndex(slotIdx);
+                  }}
                   disabled={!isFilled || isCountingDown || isRecordingBoomerang || isProcessingBoomerang}
                   className={`flex items-center gap-1 py-0.5 px-2 rounded-full text-[10px] font-sans transition-all cursor-pointer ${
                     isCurrent
@@ -685,20 +775,27 @@ export default function ScreenCamera({
       {/* Portrait viewport; the complete camera image stays visible inside it. */}
       <div className="relative w-full aspect-[3/4] bg-[#faf7f2] rounded-3xl overflow-hidden shadow-lg border border-[#e8ded2] flex items-center justify-center">
         {/* Live Video Feed with Filter Effect applied ONLY to the video feed */}
-        {!isMulti && (
-          <video
-            ref={videoRef}
-            autoPlay
-            playsInline
-            muted
-            style={{
-              filter: activeFilterPreset?.cssFilter || 'none',
-            }}
-            className={`w-full h-full object-contain transition-all duration-200 ${
-              facingMode === 'user' ? '-scale-x-100' : ''
-            } ${cameraError ? 'hidden' : 'block'}`}
-          />
-        )}
+        <video
+          ref={videoRef}
+          autoPlay
+          playsInline
+          muted
+          style={{
+            filter: activeFilterPreset?.cssFilter || 'none',
+            ...(isMulti && multiPhotoSlots[currentSlotIndex] ? {
+              position: 'absolute',
+              left: `${(multiPhotoSlots[currentSlotIndex].x / 1080) * 100}%`,
+              top: `${(multiPhotoSlots[currentSlotIndex].y / 1440) * 100}%`,
+              width: `${(multiPhotoSlots[currentSlotIndex].width / 1080) * 100}%`,
+              height: `${(multiPhotoSlots[currentSlotIndex].height / 1440) * 100}%`,
+              objectFit: 'cover',
+            } : {}),
+            visibility: cameraError ? 'hidden' : 'visible',
+          }}
+          className={`transition-all duration-200 ${
+            isMulti ? '' : 'w-full h-full object-contain'
+          } ${facingMode === 'user' ? '-scale-x-100' : ''}`}
+        />
 
         {/* Fallback Screen if Camera Access is Denied */}
         {cameraError && (
@@ -744,30 +841,9 @@ export default function ScreenCamera({
           showText={true}
           currentEvent={currentEvent}
           capturedPhotos={capturedPhotos}
-          cameraPreview={isMulti ? (
-            <div className="relative w-full h-full overflow-hidden">
-              <video
-                ref={videoRef}
-                autoPlay
-                playsInline
-                muted
-                style={{ filter: activeFilterPreset?.cssFilter || 'none' }}
-                className={`w-full h-full object-cover ${
-                  facingMode === 'user' ? '-scale-x-100' : ''
-                } ${cameraError ? 'hidden' : 'block'}`}
-              />
-              {isCountingDown && (
-                <div className="absolute inset-0 z-40 bg-black/40 backdrop-blur-xs flex items-center justify-center">
-                  <span className="text-4xl sm:text-6xl font-serif text-white font-bold animate-ping duration-700">
-                    {countdownValue}
-                  </span>
-                </div>
-              )}
-              {flashAnimation && (
-                <div className="absolute inset-0 z-50 bg-white animate-out fade-out duration-250 pointer-events-none" />
-              )}
-            </div>
-          ) : null}
+          isCountingDown={isCountingDown}
+          countdownValue={countdownValue}
+          flashAnimation={flashAnimation}
         />
 
         {/* Shutter Flash Animation */}
@@ -894,7 +970,10 @@ export default function ScreenCamera({
               <button
                 key={idx}
                 type="button"
-                onClick={() => setCurrentSlotIndex(idx)}
+                onClick={() => {
+                  currentSlotRef.current = idx;
+                  setCurrentSlotIndex(idx);
+                }}
                 disabled={!photoSrc || isCountingDown || isRecordingBoomerang || isProcessingBoomerang}
                 className={`relative w-12 h-12 rounded-xl overflow-hidden border-2 cursor-pointer transition-all disabled:cursor-not-allowed ${
                   currentSlotIndex === idx

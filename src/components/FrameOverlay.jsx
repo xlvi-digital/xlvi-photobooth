@@ -9,7 +9,9 @@ export default function FrameOverlay({
   currentSlotIndex = null,
   currentEvent = null,
   capturedPhotos = [],
-  cameraPreview = null,
+  isCountingDown = false,
+  countdownValue = 3,
+  flashAnimation = false,
 }) {
   const activeId = selectedFrame?.id || frameId;
   const overlayUrl = selectedFrame?.overlay_url;
@@ -68,9 +70,7 @@ export default function FrameOverlay({
                     : 'border border-dashed border-[#c8a882]/80 bg-[#e9dfd4]'
                 }`}
               >
-                {isCurrent ? (
-                  cameraPreview
-                ) : capturedPhoto ? (
+                {isCurrent ? null : capturedPhoto ? (
                   <img
                     src={capturedPhoto}
                     alt={`Hasil foto slot ${idx + 1}`}
@@ -80,6 +80,16 @@ export default function FrameOverlay({
                   <div className="absolute inset-0 flex items-center justify-center text-[#8c7365]">
                     <span className="text-[10px] font-serif uppercase tracking-widest">Slot 0{idx + 1}</span>
                   </div>
+                )}
+                {isCurrent && isCountingDown && (
+                  <div className="absolute inset-0 z-10 bg-black/40 backdrop-blur-xs flex items-center justify-center">
+                    <span className="text-4xl sm:text-6xl font-serif text-white font-bold animate-ping duration-700">
+                      {countdownValue}
+                    </span>
+                  </div>
+                )}
+                {isCurrent && flashAnimation && (
+                  <div className="absolute inset-0 z-20 bg-white animate-out fade-out duration-250 pointer-events-none" />
                 )}
                 <span className={`absolute top-1 left-1 z-10 text-[8px] font-serif uppercase tracking-widest px-1.5 py-0.5 rounded-full ${
                   isCurrent ? 'bg-[#5c4033] text-white font-bold' : 'bg-black/45 text-white'
